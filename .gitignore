@@ -1,6 +1,9 @@
 node_modules/
 target/
 frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 test-results/
 playwright-report/
 .DS_Store
