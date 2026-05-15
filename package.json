@@ -1,0 +1,13 @@
+{
+  "name": "accounts-repo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Client-owned financial repos for Malaysia Sdn Bhd year-end review packs.",
+  "scripts": {
+    "dev": "pnpm --dir frontend dev",
+    "build": "pnpm --dir frontend build",
+    "test": "pnpm --dir frontend test -- --run",
+    "e2e": "pnpm --dir frontend exec playwright test -c ../playwright.config.ts"
+  },
+  "packageManager": "pnpm@10.11.0"
+}
