@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   approveReviewer,
@@ -34,28 +34,34 @@ export function App() {
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  async function loadInitial(isActive: () => boolean = () => true) {
+    try {
+      setLoading(true);
+      setError(null);
+      const repoList = await listRepos();
+      if (!isActive()) return;
+
+      setRepos(repoList);
+      const firstRepoId = repoList[0]?.id ?? null;
+      setSelectedRepoId(firstRepoId);
+
+      const nextWorkspace = firstRepoId ? await getRepoWorkspace(firstRepoId) : null;
+      if (!isActive()) return;
+      setWorkspace(nextWorkspace);
+    } catch (caught) {
+      if (isActive()) {
+        setWorkspace(null);
+        setError(caught instanceof Error ? caught.message : "Failed to load repo");
+      }
+    } finally {
+      if (isActive()) setLoading(false);
+    }
+  }
+
   useEffect(() => {
     let active = true;
 
-    async function loadInitial() {
-      try {
-        setLoading(true);
-        const repoList = await listRepos();
-        if (!active) return;
-        setRepos(repoList);
-        const firstRepoId = repoList[0]?.id ?? null;
-        setSelectedRepoId(firstRepoId);
-        if (firstRepoId) {
-          setWorkspace(await getRepoWorkspace(firstRepoId));
-        }
-      } catch (caught) {
-        if (active) setError(caught instanceof Error ? caught.message : "Failed to load repo");
-      } finally {
-        if (active) setLoading(false);
-      }
-    }
-
-    void loadInitial();
+    void loadInitial(() => active);
 
     return () => {
       active = false;
@@ -64,8 +70,9 @@ export function App() {
 
   async function reloadWorkspace(repoId = selectedRepoId) {
     if (!repoId) return;
-    setWorkspace(await getRepoWorkspace(repoId));
-    setRepos(await listRepos());
+    const [nextWorkspace, nextRepos] = await Promise.all([getRepoWorkspace(repoId), listRepos()]);
+    setWorkspace(nextWorkspace);
+    setRepos(nextRepos);
   }
 
   async function runAction(label: string, action: () => Promise<void>) {
@@ -82,8 +89,19 @@ export function App() {
   }
 
   async function handleRepoSelect(repoId: string) {
-    setSelectedRepoId(repoId);
-    setWorkspace(await getRepoWorkspace(repoId));
+    if (repoId === selectedRepoId || actionPending !== null) return;
+
+    try {
+      setActionPending(`repo:${repoId}`);
+      setError(null);
+      const nextWorkspace = await getRepoWorkspace(repoId);
+      setSelectedRepoId(repoId);
+      setWorkspace(nextWorkspace);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to load selected repo");
+    } finally {
+      setActionPending(null);
+    }
   }
 
   if (loading) {
@@ -95,7 +113,12 @@ export function App() {
       <main className="empty-state">
         <p className="eyebrow">Accounts Repo</p>
         <h1>No financial repo is available.</h1>
-        {error ? <p className="error-copy">{error}</p> : null}
+        {error ? <p className="error-copy" role="alert">{error}</p> : null}
+        {error ? (
+          <button className="primary-button" onClick={() => void loadInitial()} type="button">
+            Retry connection
+          </button>
+        ) : null}
       </main>
     );
   }
@@ -104,8 +127,20 @@ export function App() {
     workspace.commits[workspace.commits.length - 1];
   const firstCommit = workspace.commits[0];
 
+  if (!headCommit || !firstCommit) {
+    return (
+      <main className="empty-state">
+        <p className="eyebrow">Accounts Repo</p>
+        <h1>This repo has no financial snapshots yet.</h1>
+        <p className="empty-copy">Import a trial balance to create the first reviewable commit.</p>
+      </main>
+    );
+  }
+
+  const branchFrozen = workspace.branch.status === "frozen" || workspace.review_pack.status === "signed";
+
   return (
-    <main className="shell">
+    <main className="shell" aria-busy={actionPending !== null}>
       <aside className="repo-rail" aria-label="Financial repositories">
         <div className="brand-block">
           <span className="brand-mark">AR</span>
@@ -116,17 +151,23 @@ export function App() {
         </div>
 
         <nav className="repo-list">
-          {repos.map((repo) => (
-            <button
-              className={repo.id === selectedRepoId ? "repo-button repo-button--active" : "repo-button"}
-              key={repo.id}
-              onClick={() => void handleRepoSelect(repo.id)}
-              type="button"
-            >
-              <span>{repo.name}</span>
-              <small>{repo.summary.active_branch_label}</small>
-            </button>
-          ))}
+          {repos.map((repo) => {
+            const isActive = repo.id === selectedRepoId;
+
+            return (
+              <button
+                aria-current={isActive ? "page" : undefined}
+                className={isActive ? "repo-button repo-button--active" : "repo-button"}
+                disabled={actionPending !== null}
+                key={repo.id}
+                onClick={() => void handleRepoSelect(repo.id)}
+                type="button"
+              >
+                <span>{repo.name}</span>
+                <small>{repo.summary.active_branch_label}</small>
+              </button>
+            );
+          })}
         </nav>
 
         <section className="collab-card">
@@ -168,7 +209,7 @@ export function App() {
           </div>
         </header>
 
-        {error ? <div className="toast error-copy">{error}</div> : null}
+        {error ? <div className="toast error-copy" role="alert">{error}</div> : null}
 
         <section className="metric-grid" aria-label="Financial summary">
           <MetricCard label="Revenue" value={formatCurrency(workspace.repo.summary.revenue)} tone="ink" />
@@ -196,7 +237,7 @@ export function App() {
               action={
                 <button
                   className="ghost-button"
-                  disabled={actionPending !== null}
+                  disabled={actionPending !== null || branchFrozen}
                   onClick={() =>
                     void runAction("correction", async () => {
                       await commitCorrection(workspace.repo.id, workspace.branch.id, {
@@ -213,9 +254,14 @@ export function App() {
                       });
                     })
                   }
+                  title={branchFrozen ? "Signed branches are immutable" : undefined}
                   type="button"
                 >
-                  {actionPending === "correction" ? "Appending..." : "Append correction commit"}
+                  {actionPending === "correction"
+                    ? "Appending..."
+                    : branchFrozen
+                      ? "Branch frozen after sign-off"
+                      : "Append correction commit"}
                 </button>
               }
             />
@@ -254,6 +300,7 @@ export function App() {
 
           <ReviewPackPanel
             actionPending={actionPending}
+            branchFrozen={branchFrozen}
             onApprove={() =>
               void runAction("approve", async () => {
                 await approveReviewer(workspace.review_pack.id, {
@@ -342,7 +389,7 @@ export function App() {
 
 function LoadingScreen() {
   return (
-    <main className="loading-screen">
+    <main aria-busy="true" aria-live="polite" className="loading-screen" role="status">
       <div className="loading-orb" />
       <p className="eyebrow">Opening encrypted financial repo</p>
       <h1>Rebuilding authoritative snapshot...</h1>
@@ -351,7 +398,12 @@ function LoadingScreen() {
 }
 
 function StatusPill({ status }: { status: ReviewStatus }) {
-  return <span className={`status-pill status-pill--${status}`}>{reviewStatusLabel(status)}</span>;
+  const label = reviewStatusLabel(status);
+  return (
+    <span aria-label={`Review status: ${label}`} className={`status-pill status-pill--${status}`}>
+      {label}
+    </span>
+  );
 }
 
 function MetricCard({ label, value, tone }: { label: string; value: string; tone: string }) {
@@ -408,16 +460,19 @@ function DiffChip({ label, value }: { label: string; value: string }) {
 function ReviewPackPanel({
   pack,
   actionPending,
+  branchFrozen,
   onApprove,
   onSign,
 }: {
   pack: RepoWorkspace["review_pack"];
   actionPending: string | null;
+  branchFrozen: boolean;
   onApprove: () => void;
   onSign: () => void;
 }) {
   const hasReviewerApproval = pack.approvals.some((approval) => approval.role === "reviewer");
   const hasClientSignature = pack.approvals.some((approval) => approval.role === "client_director");
+  const openQueryLabel = `${pack.open_queries.length} open ${pack.open_queries.length === 1 ? "query" : "queries"}`;
 
   return (
     <section className="panel panel--review">
@@ -430,7 +485,7 @@ function ReviewPackPanel({
       </div>
 
       <div className="query-box">
-        <span>{pack.open_queries.length} open query</span>
+        <span>{openQueryLabel}</span>
         {pack.open_queries.map((query) => (
           <p key={query.id}>{query.title}</p>
         ))}
@@ -439,7 +494,7 @@ function ReviewPackPanel({
       <div className="approval-actions">
         <button
           className="primary-button"
-          disabled={pack.status !== "in_review" || actionPending !== null}
+          disabled={branchFrozen || pack.status !== "in_review" || actionPending !== null}
           onClick={onApprove}
           type="button"
         >
@@ -447,7 +502,7 @@ function ReviewPackPanel({
         </button>
         <button
           className="primary-button primary-button--dark"
-          disabled={pack.status !== "reviewer_approved" || actionPending !== null}
+          disabled={branchFrozen || pack.status !== "reviewer_approved" || actionPending !== null}
           onClick={onSign}
           type="button"
         >
@@ -461,7 +516,7 @@ function ReviewPackPanel({
 function ApprovalStep({ complete, label }: { complete: boolean; label: string }) {
   return (
     <div className={complete ? "approval-step approval-step--complete" : "approval-step"}>
-      <span>{complete ? "Done" : "Waiting"}</span>
+      <span>{complete ? "Complete" : "Waiting"}</span>
       <strong>{label}</strong>
     </div>
   );
@@ -483,7 +538,7 @@ function CommitRow({ commit }: { commit: Commit }) {
 
 function FsLineCard({ line }: { line: FinancialStatementLine }) {
   const amount = decimal(line.amount);
-  const accountCount = useMemo(() => line.account_codes.length, [line.account_codes.length]);
+  const accountCount = line.account_codes.length;
 
   return (
     <article className="fs-card">

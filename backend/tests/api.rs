@@ -166,3 +166,132 @@ async fn creates_correction_commit_without_rewriting_existing_history_through_ht
         before_commit_ids
     );
 }
+
+#[tokio::test]
+async fn rejects_correction_commit_after_client_signoff_through_http() {
+    let app = test_app();
+    let repos_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/repos")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let repos: Vec<accounts_repo_backend::domain::LegalEntityRepo> =
+        read_json(repos_response).await;
+    let repo_id = repos[0].id;
+
+    let before_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/repos/{repo_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let before: accounts_repo_backend::store::RepoWorkspace = read_json(before_response).await;
+
+    let approve_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/reviewer-approval",
+                    before.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "actor_name": "Amjad Salleh",
+                        "note": "Reviewed"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve_response.status(), StatusCode::CREATED);
+
+    let sign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/client-signoff",
+                    before.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "actor_name": "Hazli Johar",
+                        "note": "Signed"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sign_response.status(), StatusCode::CREATED);
+
+    let correction_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/repos/{}/branches/{}/correction-commits",
+                    repo_id, before.branch.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "actor_name": "Aina Rahman",
+                        "message": "Attempt correction after sign-off",
+                        "reference": "AJ-003",
+                        "description": "Reclass bank charges into administrative expenses",
+                        "rationale": "Reviewer requested presentation under administrative expenses",
+                        "lines": [
+                            {"account_code": "6000", "amount": "3900.00"},
+                            {"account_code": "6400", "amount": "-3900.00"}
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(correction_response.status(), StatusCode::BAD_REQUEST);
+    let error: serde_json::Value = read_json(correction_response).await;
+    assert_eq!(
+        error["error"],
+        "period branch is frozen after client sign-off"
+    );
+
+    let after_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/repos/{repo_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let after: accounts_repo_backend::store::RepoWorkspace = read_json(after_response).await;
+
+    assert_eq!(after.commits.len(), before.commits.len());
+    assert_eq!(
+        after.branch.status,
+        accounts_repo_backend::domain::BranchStatus::Frozen
+    );
+}

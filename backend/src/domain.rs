@@ -14,6 +14,8 @@ pub enum DomainError {
     AlreadySigned,
     #[error("approval role has already approved this review pack")]
     DuplicateApproval,
+    #[error("period branch is frozen after client sign-off")]
+    FrozenBranch,
     #[error("adjustment must balance to zero")]
     UnbalancedAdjustment,
 }

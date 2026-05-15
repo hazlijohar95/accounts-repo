@@ -405,11 +405,27 @@ impl AppStore {
         if branch.legal_entity_id != repo_id {
             return Err(StoreError::NotFound);
         }
+        if branch.status == BranchStatus::Frozen {
+            return Err(StoreError::Domain(DomainError::FrozenBranch));
+        }
+
+        let review_pack_id = *self
+            .review_pack_by_repo
+            .get(&repo_id)
+            .ok_or(StoreError::NotFound)?;
+        let review_pack = self
+            .review_packs
+            .get(&review_pack_id)
+            .ok_or(StoreError::NotFound)?;
+        if review_pack.status == ReviewStatus::Signed {
+            return Err(StoreError::Domain(DomainError::FrozenBranch));
+        }
 
         let commits = self
             .commits_by_branch
-            .get_mut(&branch_id)
+            .get(&branch_id)
             .ok_or(StoreError::NotFound)?;
+        let next_sequence_number = commits.len() as u32 + 1;
         let head_commit = commits
             .iter()
             .find(|commit| commit.id == branch.head_commit_id)
@@ -437,17 +453,25 @@ impl AppStore {
 
         let commit = create_commit(
             branch_id,
-            commits.len() as u32 + 1,
+            next_sequence_number,
             Some(head_commit.snapshot_hash.clone()),
             snapshot,
             request.message,
             request.actor_name.clone(),
         );
 
-        commits.push(commit.clone());
+        self.commits_by_branch
+            .get_mut(&branch_id)
+            .ok_or(StoreError::NotFound)?
+            .push(commit.clone());
         if let Some(branch) = self.branches.get_mut(&branch_id) {
             branch.head_commit_id = commit.id;
             branch.status = BranchStatus::Working;
+        }
+        if let Some(review_pack) = self.review_packs.get_mut(&review_pack_id) {
+            review_pack.commit_id = commit.id;
+            review_pack.status = ReviewStatus::InReview;
+            review_pack.approvals.clear();
         }
 
         self.push_audit(
@@ -760,5 +784,110 @@ mod tests {
             result,
             Err(StoreError::Domain(DomainError::ReviewerApprovalRequired))
         ));
+    }
+
+    #[test]
+    fn reopens_review_pack_when_correction_changes_reviewed_snapshot() {
+        let mut store = AppStore::seeded();
+        let repo_id = *store.repos.keys().next().unwrap();
+        let branch_id = *store.branch_by_repo.get(&repo_id).unwrap();
+        let review_pack_id = *store.review_packs.keys().next().unwrap();
+
+        store
+            .approve_reviewer(
+                review_pack_id,
+                ApprovalRequest {
+                    actor_name: "Amjad Salleh".to_string(),
+                    note: Some("Reviewed".to_string()),
+                },
+            )
+            .unwrap();
+
+        let new_commit = store
+            .commit_correction(
+                repo_id,
+                branch_id,
+                CorrectionCommitRequest {
+                    actor_name: "Aina Rahman".to_string(),
+                    message: "Append correction after reviewer note".to_string(),
+                    reference: "AJ-003".to_string(),
+                    description: "Reclass bank charges to administrative expenses".to_string(),
+                    rationale: "Reviewer requested presentation under admin expenses".to_string(),
+                    lines: vec![
+                        AdjustmentLine {
+                            account_code: "6000".to_string(),
+                            amount: dec("3900.00"),
+                        },
+                        AdjustmentLine {
+                            account_code: "6400".to_string(),
+                            amount: dec("-3900.00"),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        let workspace = store.repo_workspace(repo_id).unwrap();
+
+        assert_eq!(workspace.review_pack.status, ReviewStatus::InReview);
+        assert_eq!(workspace.review_pack.commit_id, new_commit.id);
+        assert!(workspace.review_pack.approvals.is_empty());
+    }
+
+    #[test]
+    fn rejects_correction_commit_after_client_signoff_to_keep_signed_branch_immutable() {
+        let mut store = AppStore::seeded();
+        let repo_id = *store.repos.keys().next().unwrap();
+        let branch_id = *store.branch_by_repo.get(&repo_id).unwrap();
+        let review_pack_id = *store.review_packs.keys().next().unwrap();
+
+        store
+            .approve_reviewer(
+                review_pack_id,
+                ApprovalRequest {
+                    actor_name: "Amjad Salleh".to_string(),
+                    note: Some("Reviewed".to_string()),
+                },
+            )
+            .unwrap();
+        store
+            .sign_client(
+                review_pack_id,
+                ApprovalRequest {
+                    actor_name: "Hazli Johar".to_string(),
+                    note: Some("Signed".to_string()),
+                },
+            )
+            .unwrap();
+        let before = store.repo_workspace(repo_id).unwrap();
+
+        let result = store.commit_correction(
+            repo_id,
+            branch_id,
+            CorrectionCommitRequest {
+                actor_name: "Aina Rahman".to_string(),
+                message: "Attempt correction after sign-off".to_string(),
+                reference: "AJ-003".to_string(),
+                description: "Reclass bank charges to administrative expenses".to_string(),
+                rationale: "Reviewer requested presentation under admin expenses".to_string(),
+                lines: vec![
+                    AdjustmentLine {
+                        account_code: "6000".to_string(),
+                        amount: dec("3900.00"),
+                    },
+                    AdjustmentLine {
+                        account_code: "6400".to_string(),
+                        amount: dec("-3900.00"),
+                    },
+                ],
+            },
+        );
+        let after = store.repo_workspace(repo_id).unwrap();
+
+        assert!(matches!(
+            result,
+            Err(StoreError::Domain(DomainError::FrozenBranch))
+        ));
+        assert_eq!(after.commits.len(), before.commits.len());
+        assert_eq!(after.branch.status, BranchStatus::Frozen);
     }
 }

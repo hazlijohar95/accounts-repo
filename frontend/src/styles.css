@@ -4,9 +4,17 @@
   --ink-muted: #6d6559;
   --paper: #f4eddf;
   --paper-deep: #e7dac4;
+  --paper-wash: #f7f1e7;
+  --paper-warm: #efe2cd;
+  --paper-soft: #f5ebdb;
   --panel: rgba(255, 251, 242, 0.82);
+  --cream: #fff8e8;
+  --cream-bright: #fff3cd;
+  --ink-deep: #1c160d;
+  --ink-mark: #21170b;
   --line: rgba(47, 37, 26, 0.14);
   --gold: #c58c2c;
+  --gold-ink: #7d5208;
   --gold-soft: #f6dca7;
   --green: #2f7a4d;
   --green-soft: #d8ead7;
@@ -37,7 +45,7 @@ body {
   background:
     radial-gradient(circle at 16% 12%, rgba(197, 140, 44, 0.22), transparent 30rem),
     radial-gradient(circle at 80% 0%, rgba(38, 79, 117, 0.16), transparent 26rem),
-    linear-gradient(135deg, #f7f1e7 0%, #efe2cd 46%, #f5ebdb 100%);
+    linear-gradient(135deg, var(--paper-wash) 0%, var(--paper-warm) 46%, var(--paper-soft) 100%);
 }
 
 body::before {
@@ -67,6 +75,11 @@ button:disabled {
   opacity: 0.55;
 }
 
+button:focus-visible {
+  outline: 3px solid var(--gold-soft);
+  outline-offset: 3px;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr);
@@ -87,7 +100,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 34px;
   background: rgba(27, 23, 17, 0.92);
-  color: #fff8e8;
+  color: var(--cream);
   box-shadow: var(--shadow);
 }
 
@@ -106,11 +119,11 @@ button:disabled {
   place-items: center;
   border: 1px solid rgba(255, 248, 232, 0.28);
   border-radius: 17px;
-  color: #21170b;
+  color: var(--ink-mark);
   font-family: var(--serif);
   font-size: 1.1rem;
   font-weight: 900;
-  background: linear-gradient(135deg, var(--gold-soft), #fff3cd);
+  background: linear-gradient(135deg, var(--gold-soft), var(--cream-bright));
 }
 
 .brand-block strong {
@@ -142,17 +155,21 @@ button:disabled {
   padding: 16px;
   border: 1px solid rgba(255, 248, 232, 0.12);
   border-radius: 22px;
-  color: #fff8e8;
+  color: var(--cream);
   text-align: left;
   background: rgba(255, 255, 255, 0.05);
   transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
 }
 
-.repo-button:hover,
+.repo-button:hover:not(:disabled),
 .repo-button--active {
   transform: translateY(-2px);
   border-color: rgba(246, 220, 167, 0.55);
   background: rgba(246, 220, 167, 0.12);
+}
+
+.repo-button:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .repo-button span {
@@ -303,7 +320,7 @@ button:disabled {
 }
 
 .status-pill--reviewer_approved {
-  color: #7d5208;
+  color: var(--gold-ink);
   background: var(--gold-soft);
 }
 
@@ -322,6 +339,13 @@ button:disabled {
 .error-copy {
   color: var(--red);
   font-weight: 800;
+}
+
+.empty-copy {
+  max-width: 42rem;
+  margin: 0;
+  color: var(--ink-muted);
+  line-height: 1.6;
 }
 
 .metric-grid {
@@ -436,7 +460,7 @@ button:disabled {
   background:
     linear-gradient(145deg, rgba(27, 23, 17, 0.94), rgba(52, 42, 29, 0.92)),
     radial-gradient(circle at 90% 0%, rgba(197, 140, 44, 0.35), transparent 16rem);
-  color: #fff8e8;
+  color: var(--cream);
 }
 
 .panel-header {
@@ -471,19 +495,24 @@ button:disabled {
 
 .primary-button {
   padding: 13px 18px;
-  color: #1c160d;
+  color: var(--ink-deep);
   background: var(--gold-soft);
   box-shadow: 0 12px 24px rgba(197, 140, 44, 0.18);
 }
 
 .primary-button--dark {
-  color: #fff8e8;
+  color: var(--cream);
   background: var(--green);
 }
 
-.ghost-button:hover,
-.primary-button:hover {
+.ghost-button:hover:not(:disabled),
+.primary-button:hover:not(:disabled) {
   transform: translateY(-2px);
+}
+
+.ghost-button:active:not(:disabled),
+.primary-button:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .diff-headline {
@@ -547,7 +576,7 @@ th {
   font-size: 0.72rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  background: #fff8e8;
+  background: var(--cream);
 }
 
 td:nth-child(n + 2),
@@ -591,7 +620,7 @@ th:nth-child(n + 2) {
 .approval-step span {
   padding: 6px 9px;
   border-radius: 999px;
-  color: #1c160d;
+  color: var(--ink-deep);
   font-size: 0.72rem;
   font-weight: 900;
   background: var(--paper-deep);
@@ -648,7 +677,7 @@ th:nth-child(n + 2) {
   height: 42px;
   place-items: center;
   border-radius: 15px;
-  color: #1c160d;
+  color: var(--ink-deep);
   font-family: var(--mono);
   font-weight: 900;
   background: var(--gold-soft);
