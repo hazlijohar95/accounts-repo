@@ -1,4 +1,6 @@
-use crate::store::{AppStore, ApprovalRequest, CorrectionCommitRequest, StoreError};
+use crate::store::{
+    AppStore, ApprovalRequest, CorrectionCommitRequest, StoreError, WorkspaceImportRequest,
+};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -21,6 +23,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/repos", get(list_repos))
+        .route("/api/imports/year-end-review-pack", post(import_workspace))
         .route("/api/repos/{repo_id}", get(repo_workspace))
         .route("/api/repos/{repo_id}/audit", get(audit_events))
         .route(
@@ -57,6 +60,14 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 async fn list_repos(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let store = state.store.read().await;
     Ok(Json(store.list_repos()?))
+}
+
+async fn import_workspace(
+    State(state): State<AppState>,
+    Json(request): Json<WorkspaceImportRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let mut store = state.store.write().await;
+    Ok((StatusCode::CREATED, Json(store.import_workspace(request)?)))
 }
 
 async fn repo_workspace(
@@ -132,6 +143,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self.0 {
             StoreError::NotFound => (StatusCode::NOT_FOUND, "Resource not found".to_string()),
+            StoreError::InvalidImport(message) => (StatusCode::BAD_REQUEST, message),
             StoreError::Domain(error) => (StatusCode::BAD_REQUEST, error.to_string()),
         };
 

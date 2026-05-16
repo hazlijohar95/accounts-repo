@@ -23,3 +23,8 @@ Finance-literate client/director owns the repo, controls access, and can inspect
 - Corrections are new commits, never silent rewrites.
 - Reviewer approval must happen before client sign-off.
 - AI can suggest later, but never authorizes a commit or approval.
+- Local product testing uses imported real workspace data, not preloaded demo workspaces.
+
+## Product Reference
+
+See `docs/github-depth-product-direction.md` for the GitHub-depth product and presentation direction.

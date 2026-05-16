@@ -164,6 +164,70 @@ afterEach(() => {
 });
 
 describe("review pack workflow", () => {
+  it("prevents empty backend from hiding real trial balance import path", async () => {
+    const user = userEvent.setup();
+    let capturedImport: unknown = null;
+    let imported = false;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/repos")) {
+          return new Response(JSON.stringify(imported ? [workspace.repo] : []), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith("/api/imports/year-end-review-pack")) {
+          capturedImport = JSON.parse(String(init?.body));
+          imported = true;
+          return new Response(JSON.stringify(workspace), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ error: "Unexpected request" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) satisfies typeof fetch,
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /Import a real trial balance/ })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Entity name"), "Nusantara Precision Sdn Bhd");
+    await user.type(screen.getByLabelText("Registration number"), "202001034561 (1390882-X)");
+    await user.type(screen.getByLabelText("Owner"), "Hazli Johar");
+    await user.clear(screen.getByLabelText("Firm"));
+    await user.type(screen.getByLabelText("Firm"), "Amjad & Hazli Advisory");
+    await user.type(screen.getByLabelText("Preparer"), "Aina Rahman");
+    await user.type(screen.getByLabelText("Reviewer"), "Amjad Salleh");
+    await user.type(screen.getByLabelText("Client signer"), "Hazli Johar");
+    await user.type(screen.getByLabelText("Branch label"), "FY2026 Year-End");
+    await user.type(screen.getByLabelText("Period start"), "2025-07-01");
+    await user.type(screen.getByLabelText("Period end"), "2026-06-30");
+    await user.type(screen.getByLabelText("Source label"), "Real TB export");
+    await user.type(
+      screen.getByLabelText("CSV contents"),
+      "account_code,account_name,account_type,amount,fs_line,assertion\n1000,Cash at Bank,asset,1000.00,Cash and Bank,Existence\n4000,Revenue,income,-1000.00,Revenue,Completeness",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Import real TB" }));
+
+    expect(await screen.findByRole("heading", { name: "Nusantara Precision Sdn Bhd" })).toBeInTheDocument();
+    expect(capturedImport).toMatchObject({
+      entity_name: "Nusantara Precision Sdn Bhd",
+      trial_balance: [
+        { account_code: "1000", amount: "1000.00" },
+        { account_code: "4000", amount: "-1000.00" },
+      ],
+    });
+  });
+
   it("prevents client signoff button before reviewer approval is recorded", async () => {
     stubWorkspaceFetch(workspace);
 
@@ -172,8 +236,9 @@ describe("review pack workflow", () => {
     expect(
       await screen.findByRole("heading", { name: "Nusantara Precision Sdn Bhd" }),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("Source data notice")).toHaveTextContent("TB");
     expect(screen.getByRole("button", { name: "Approve as reviewer" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Sign as client" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Sign as client" })).not.toBeInTheDocument();
   });
 
   it("prevents frozen signed branches from appending correction commits in the UI", async () => {
@@ -185,9 +250,11 @@ describe("review pack workflow", () => {
       await screen.findByRole("heading", { name: "Nusantara Precision Sdn Bhd" }),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Signed and frozen")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Branch frozen after sign-off" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Approve as reviewer" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Sign as client" })).toBeDisabled();
+    expect(screen.getByText("Corrections closed")).toBeInTheDocument();
+    expect(screen.getByText("Signed branches are immutable.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Append correction" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve as reviewer" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign as client" })).not.toBeInTheDocument();
   });
 
   it("surfaces repository switch failures instead of silently abandoning the active workspace", async () => {

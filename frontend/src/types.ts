@@ -187,3 +187,29 @@ export interface CorrectionCommitPayload {
   rationale: string;
   lines: AdjustmentLine[];
 }
+
+export interface ImportTrialBalanceLine {
+  account_code: string;
+  account_name: string;
+  account_type: TrialBalanceLine["account_type"];
+  amount: string;
+  fs_line: string;
+  assertion: string;
+}
+
+export interface ImportWorkspacePayload {
+  entity_name: string;
+  registration_number: string;
+  jurisdiction: string;
+  entity_type: string;
+  owner_name: string;
+  firm_name: string;
+  preparer_name: string;
+  reviewer_name: string;
+  client_signer_name: string;
+  branch_label: string;
+  period_start: string;
+  period_end: string;
+  source_label: string;
+  trial_balance: ImportTrialBalanceLine[];
+}

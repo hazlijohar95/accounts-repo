@@ -3,6 +3,7 @@ import type {
   ApprovalPayload,
   Commit,
   CorrectionCommitPayload,
+  ImportWorkspacePayload,
   LegalEntityRepo,
   RepoWorkspace,
   ReviewPack,
@@ -31,6 +32,13 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listRepos(): Promise<LegalEntityRepo[]> {
   return requestJson<LegalEntityRepo[]>("/api/repos");
+}
+
+export function importWorkspace(payload: ImportWorkspacePayload): Promise<RepoWorkspace> {
+  return requestJson<RepoWorkspace>("/api/imports/year-end-review-pack", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getRepoWorkspace(repoId: string): Promise<RepoWorkspace> {

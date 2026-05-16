@@ -17,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let state = AppState {
-        store: Arc::new(RwLock::new(AppStore::seeded())),
+        store: Arc::new(RwLock::new(AppStore::empty())),
     };
 
     let router = app(state).layer(TraceLayer::new_for_http());

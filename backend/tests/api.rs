@@ -15,9 +15,86 @@ fn test_app() -> axum::Router {
     })
 }
 
+fn empty_test_app() -> axum::Router {
+    app(AppState {
+        store: Arc::new(RwLock::new(AppStore::empty())),
+    })
+}
+
 async fn read_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn imports_real_trial_balance_through_http_to_prevent_seed_dependency() {
+    let app = empty_test_app();
+    let import_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/imports/year-end-review-pack")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "entity_name": "Real Components Sdn Bhd",
+                        "registration_number": "202401010101 (1567890-X)",
+                        "jurisdiction": "Malaysia",
+                        "entity_type": "Sdn Bhd",
+                        "owner_name": "Hazli Johar",
+                        "firm_name": "Amjad & Hazli Advisory",
+                        "preparer_name": "Aina Rahman",
+                        "reviewer_name": "Amjad Salleh",
+                        "client_signer_name": "Hazli Johar",
+                        "branch_label": "FY2026 Year-End",
+                        "period_start": "2025-07-01",
+                        "period_end": "2026-06-30",
+                        "source_label": "Real TB export 2026-06-30",
+                        "trial_balance": [
+                            {
+                                "account_code": "1000",
+                                "account_name": "Cash at Bank",
+                                "account_type": "asset",
+                                "amount": "1000.00",
+                                "fs_line": "Cash and Bank",
+                                "assertion": "Existence"
+                            },
+                            {
+                                "account_code": "4000",
+                                "account_name": "Revenue",
+                                "account_type": "income",
+                                "amount": "-1000.00",
+                                "fs_line": "Revenue",
+                                "assertion": "Completeness"
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(import_response.status(), StatusCode::CREATED);
+    let workspace: accounts_repo_backend::store::RepoWorkspace = read_json(import_response).await;
+    assert_eq!(workspace.repo.name, "Real Components Sdn Bhd");
+    assert_eq!(workspace.commits.len(), 2);
+
+    let repos_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/repos")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let repos: Vec<accounts_repo_backend::domain::LegalEntityRepo> =
+        read_json(repos_response).await;
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].name, "Real Components Sdn Bhd");
 }
 
 #[tokio::test]

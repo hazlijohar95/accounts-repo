@@ -7,7 +7,10 @@ use crate::domain::{
 use chrono::{NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -15,6 +18,8 @@ use uuid::Uuid;
 pub enum StoreError {
     #[error("resource not found")]
     NotFound,
+    #[error("invalid import: {0}")]
+    InvalidImport(String),
     #[error(transparent)]
     Domain(#[from] DomainError),
 }
@@ -45,6 +50,35 @@ pub struct ApprovalRequest {
     pub note: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkspaceImportRequest {
+    pub entity_name: String,
+    pub registration_number: String,
+    pub jurisdiction: String,
+    pub entity_type: String,
+    pub owner_name: String,
+    pub firm_name: String,
+    pub preparer_name: String,
+    pub reviewer_name: String,
+    pub client_signer_name: String,
+    pub branch_label: String,
+    pub period_start: NaiveDate,
+    pub period_end: NaiveDate,
+    pub source_label: String,
+    pub trial_balance: Vec<WorkspaceImportTrialBalanceLine>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkspaceImportTrialBalanceLine {
+    pub account_code: String,
+    pub account_name: String,
+    pub account_type: AccountType,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    pub fs_line: String,
+    pub assertion: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct AppStore {
     users: BTreeMap<Uuid, User>,
@@ -59,6 +93,20 @@ pub struct AppStore {
 }
 
 impl AppStore {
+    pub fn empty() -> Self {
+        Self {
+            users: BTreeMap::new(),
+            organizations: BTreeMap::new(),
+            repos: BTreeMap::new(),
+            branches: BTreeMap::new(),
+            branch_by_repo: BTreeMap::new(),
+            commits_by_branch: BTreeMap::new(),
+            review_packs: BTreeMap::new(),
+            review_pack_by_repo: BTreeMap::new(),
+            audit_events_by_repo: BTreeMap::new(),
+        }
+    }
+
     pub fn seeded() -> Self {
         let client_org_id = Uuid::new_v4();
         let firm_org_id = Uuid::new_v4();
@@ -272,6 +320,230 @@ impl AppStore {
             review_pack_by_repo: BTreeMap::from([(repo_id, review_pack_id)]),
             audit_events_by_repo: BTreeMap::from([(repo_id, audit_events)]),
         }
+    }
+
+    pub fn import_workspace(
+        &mut self,
+        request: WorkspaceImportRequest,
+    ) -> Result<RepoWorkspace, StoreError> {
+        validate_import_request(&request)?;
+
+        let client_org_id = Uuid::new_v4();
+        let firm_org_id = Uuid::new_v4();
+        let owner_id = Uuid::new_v4();
+        let preparer_id = Uuid::new_v4();
+        let reviewer_id = Uuid::new_v4();
+        let signer_id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+        let branch_id = Uuid::new_v4();
+
+        self.organizations.insert(
+            client_org_id,
+            Organization {
+                id: client_org_id,
+                name: request.entity_name.clone(),
+            },
+        );
+        self.organizations.insert(
+            firm_org_id,
+            Organization {
+                id: firm_org_id,
+                name: request.firm_name.clone(),
+            },
+        );
+
+        self.users.insert(
+            owner_id,
+            User {
+                id: owner_id,
+                display_name: request.owner_name.clone(),
+                email: user_email(&request.owner_name, "client.local"),
+            },
+        );
+        self.users.insert(
+            preparer_id,
+            User {
+                id: preparer_id,
+                display_name: request.preparer_name.clone(),
+                email: user_email(&request.preparer_name, "firm.local"),
+            },
+        );
+        self.users.insert(
+            reviewer_id,
+            User {
+                id: reviewer_id,
+                display_name: request.reviewer_name.clone(),
+                email: user_email(&request.reviewer_name, "firm.local"),
+            },
+        );
+        self.users.insert(
+            signer_id,
+            User {
+                id: signer_id,
+                display_name: request.client_signer_name.clone(),
+                email: user_email(&request.client_signer_name, "client.local"),
+            },
+        );
+
+        let collaborators = vec![
+            Collaborator {
+                user_id: owner_id,
+                display_name: request.owner_name.clone(),
+                role: RepoRole::Owner,
+            },
+            Collaborator {
+                user_id: preparer_id,
+                display_name: request.preparer_name.clone(),
+                role: RepoRole::Preparer,
+            },
+            Collaborator {
+                user_id: reviewer_id,
+                display_name: request.reviewer_name.clone(),
+                role: RepoRole::Reviewer,
+            },
+            Collaborator {
+                user_id: signer_id,
+                display_name: request.client_signer_name.clone(),
+                role: RepoRole::ClientSigner,
+            },
+        ];
+
+        let baseline_snapshot = FinancialSnapshot::from_components(vec![], vec![], vec![])?;
+        let baseline_commit = create_commit(
+            branch_id,
+            1,
+            None,
+            baseline_snapshot,
+            format!("Opened {} period branch", request.branch_label),
+            request.preparer_name.clone(),
+        );
+
+        let trial_balance = request
+            .trial_balance
+            .iter()
+            .map(|line| TrialBalanceLine {
+                account_code: line.account_code.trim().to_string(),
+                account_name: line.account_name.trim().to_string(),
+                account_type: line.account_type.clone(),
+                amount: line.amount,
+                source_label: request.source_label.trim().to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mappings = request
+            .trial_balance
+            .iter()
+            .map(|line| Mapping {
+                account_code: line.account_code.trim().to_string(),
+                fs_line: line.fs_line.trim().to_string(),
+                assertion: line.assertion.trim().to_string(),
+            })
+            .collect::<Vec<_>>();
+        let imported_snapshot =
+            FinancialSnapshot::from_components(trial_balance, mappings, vec![])?;
+        let import_commit = create_commit(
+            branch_id,
+            2,
+            Some(baseline_commit.snapshot_hash.clone()),
+            imported_snapshot,
+            format!(
+                "Imported trial balance from {}",
+                request.source_label.trim()
+            ),
+            request.preparer_name.clone(),
+        );
+
+        let branch = PeriodBranch {
+            id: branch_id,
+            legal_entity_id: repo_id,
+            label: request.branch_label.clone(),
+            period_start: request.period_start,
+            period_end: request.period_end,
+            status: BranchStatus::InReview,
+            head_commit_id: import_commit.id,
+        };
+        let review_pack_id = Uuid::new_v4();
+        let review_pack = ReviewPack {
+            id: review_pack_id,
+            legal_entity_id: repo_id,
+            period_branch_id: branch_id,
+            commit_id: import_commit.id,
+            title: format!("{} Review Pack", request.branch_label),
+            status: ReviewStatus::InReview,
+            approvals: vec![],
+            open_queries: vec![],
+            created_by: request.preparer_name.clone(),
+            created_at: Utc::now(),
+        };
+        let repo = LegalEntityRepo {
+            id: repo_id,
+            owner_organization_id: client_org_id,
+            name: request.entity_name.clone(),
+            registration_number: request.registration_number.clone(),
+            jurisdiction: request.jurisdiction.clone(),
+            entity_type: request.entity_type.clone(),
+            collaborators,
+            summary: repo_summary(&branch, &import_commit, review_pack.status.clone()),
+        };
+        let audit_events = vec![
+            audit(
+                repo_id,
+                request.owner_name.clone(),
+                AuditEventType::RepoCreated,
+                "Client-owned legal entity repo created from imported source data",
+            ),
+            audit(
+                repo_id,
+                request.preparer_name.clone(),
+                AuditEventType::BranchCreated,
+                format!("{} period branch opened", request.branch_label),
+            ),
+            audit(
+                repo_id,
+                request.preparer_name.clone(),
+                AuditEventType::DataImported,
+                format!(
+                    "Trial balance imported from {}",
+                    request.source_label.trim()
+                ),
+            ),
+            audit(
+                repo_id,
+                request.preparer_name.clone(),
+                AuditEventType::CommitCreated,
+                format!(
+                    "Commit {} created: {}",
+                    short_hash(&baseline_commit.snapshot_hash),
+                    baseline_commit.message
+                ),
+            ),
+            audit(
+                repo_id,
+                request.preparer_name.clone(),
+                AuditEventType::CommitCreated,
+                format!(
+                    "Commit {} created: {}",
+                    short_hash(&import_commit.snapshot_hash),
+                    import_commit.message
+                ),
+            ),
+            audit(
+                repo_id,
+                request.preparer_name,
+                AuditEventType::ReviewPackOpened,
+                "Year-end review pack opened from imported trial balance",
+            ),
+        ];
+
+        self.repos.insert(repo_id, repo);
+        self.branches.insert(branch_id, branch);
+        self.branch_by_repo.insert(repo_id, branch_id);
+        self.commits_by_branch
+            .insert(branch_id, vec![baseline_commit, import_commit]);
+        self.review_packs.insert(review_pack_id, review_pack);
+        self.review_pack_by_repo.insert(repo_id, review_pack_id);
+        self.audit_events_by_repo.insert(repo_id, audit_events);
+
+        self.repo_workspace(repo_id)
     }
 
     pub fn list_repos(&self) -> Result<Vec<LegalEntityRepo>, StoreError> {
@@ -554,6 +826,88 @@ impl AppStore {
     }
 }
 
+fn validate_import_request(request: &WorkspaceImportRequest) -> Result<(), StoreError> {
+    let required = [
+        ("entity_name", request.entity_name.as_str()),
+        ("registration_number", request.registration_number.as_str()),
+        ("jurisdiction", request.jurisdiction.as_str()),
+        ("entity_type", request.entity_type.as_str()),
+        ("owner_name", request.owner_name.as_str()),
+        ("firm_name", request.firm_name.as_str()),
+        ("preparer_name", request.preparer_name.as_str()),
+        ("reviewer_name", request.reviewer_name.as_str()),
+        ("client_signer_name", request.client_signer_name.as_str()),
+        ("branch_label", request.branch_label.as_str()),
+        ("source_label", request.source_label.as_str()),
+    ];
+
+    for (field, value) in required {
+        if value.trim().is_empty() {
+            return Err(StoreError::InvalidImport(format!("{field} is required")));
+        }
+    }
+
+    if request.period_start > request.period_end {
+        return Err(StoreError::InvalidImport(
+            "period_start must be before period_end".to_string(),
+        ));
+    }
+
+    if request.trial_balance.is_empty() {
+        return Err(StoreError::InvalidImport(
+            "trial_balance must include at least one account".to_string(),
+        ));
+    }
+
+    let mut account_codes = BTreeSet::new();
+    for line in &request.trial_balance {
+        let required_line = [
+            ("account_code", line.account_code.as_str()),
+            ("account_name", line.account_name.as_str()),
+            ("fs_line", line.fs_line.as_str()),
+            ("assertion", line.assertion.as_str()),
+        ];
+        for (field, value) in required_line {
+            if value.trim().is_empty() {
+                return Err(StoreError::InvalidImport(format!(
+                    "{field} is required for every trial balance line"
+                )));
+            }
+        }
+
+        if !account_codes.insert(line.account_code.trim().to_string()) {
+            return Err(StoreError::InvalidImport(format!(
+                "duplicate account code {}",
+                line.account_code.trim()
+            )));
+        }
+    }
+
+    let total = request
+        .trial_balance
+        .iter()
+        .map(|line| line.amount)
+        .sum::<Decimal>();
+    if !total.is_zero() {
+        return Err(StoreError::InvalidImport(
+            "trial_balance must balance to zero".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn user_email(name: &str, domain: &str) -> String {
+    let local = name
+        .trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(".");
+
+    format!("{}@{}", local, domain)
+}
+
 fn audit(
     legal_entity_id: Uuid,
     actor_name: impl Into<String>,
@@ -715,6 +1069,69 @@ fn seed_adjustments() -> Vec<Adjustment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn import_request() -> WorkspaceImportRequest {
+        WorkspaceImportRequest {
+            entity_name: "Real Components Sdn Bhd".to_string(),
+            registration_number: "202401010101 (1567890-X)".to_string(),
+            jurisdiction: "Malaysia".to_string(),
+            entity_type: "Sdn Bhd".to_string(),
+            owner_name: "Hazli Johar".to_string(),
+            firm_name: "Amjad & Hazli Advisory".to_string(),
+            preparer_name: "Aina Rahman".to_string(),
+            reviewer_name: "Amjad Salleh".to_string(),
+            client_signer_name: "Hazli Johar".to_string(),
+            branch_label: "FY2026 Year-End".to_string(),
+            period_start: NaiveDate::from_ymd_opt(2025, 7, 1).unwrap(),
+            period_end: NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+            source_label: "Real TB export 2026-06-30".to_string(),
+            trial_balance: vec![
+                WorkspaceImportTrialBalanceLine {
+                    account_code: "1000".to_string(),
+                    account_name: "Cash at Bank".to_string(),
+                    account_type: AccountType::Asset,
+                    amount: dec("1000.00"),
+                    fs_line: "Cash and Bank".to_string(),
+                    assertion: "Existence".to_string(),
+                },
+                WorkspaceImportTrialBalanceLine {
+                    account_code: "4000".to_string(),
+                    account_name: "Revenue".to_string(),
+                    account_type: AccountType::Income,
+                    amount: dec("-1000.00"),
+                    fs_line: "Revenue".to_string(),
+                    assertion: "Completeness".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn imports_real_trial_balance_to_prevent_demo_workspace_confusion() {
+        let mut store = AppStore::empty();
+
+        let workspace = store.import_workspace(import_request()).unwrap();
+
+        assert_eq!(workspace.repo.name, "Real Components Sdn Bhd");
+        assert_eq!(workspace.commits.len(), 2);
+        assert_eq!(workspace.branch.head_commit_id, workspace.commits[1].id);
+        assert_eq!(workspace.review_pack.commit_id, workspace.commits[1].id);
+        assert_eq!(workspace.commits[1].snapshot.trial_balance.len(), 2);
+        assert_eq!(workspace.fs_impact_diff.changed_fs_lines.len(), 2);
+        assert_eq!(store.list_repos().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_unbalanced_real_trial_balance_to_prevent_invalid_review_pack() {
+        let mut request = import_request();
+        request.trial_balance[0].amount = dec("999.99");
+        let mut store = AppStore::empty();
+
+        let result = store.import_workspace(request);
+
+        assert!(matches!(result, Err(StoreError::InvalidImport(_))));
+        assert!(store.list_repos().unwrap().is_empty());
+    }
 
     #[test]
     fn maintains_append_only_history_when_correction_commit_is_added() {

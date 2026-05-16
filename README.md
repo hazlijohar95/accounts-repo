@@ -21,7 +21,19 @@ Postgres schema migrations are in `backend/migrations`. Start Postgres with:
 docker compose up -d postgres
 ```
 
-The current local backend uses a seeded in-memory store so the full workflow runs immediately. The schema is included for the production persistence layer.
+The local backend starts with an empty in-memory store. Import a mapped trial balance from the UI to create a real review workspace for the current session; this avoids confusing demo data with built product behavior. The schema is included for the production persistence layer.
+
+## Real Data Import
+
+Run the backend and frontend, then import a CSV with these columns:
+
+```csv
+account_code,account_name,account_type,amount,fs_line,assertion
+1000,Cash at Bank,asset,1000.00,Cash and Bank,Existence
+4000,Revenue,income,-1000.00,Revenue,Completeness
+```
+
+`account_type` must be one of `asset`, `liability`, `equity`, `income`, or `expense`. Amounts must balance to zero before the backend will create the review pack.
 
 ## Product Model
 
