@@ -8,9 +8,11 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required for the Better Auth service");
 }
 
+export const authPool = new Pool({ connectionString: databaseUrl });
+
 export const auth = betterAuth({
   appName: "Accounts Repo",
-  database: new Pool({ connectionString: databaseUrl }),
+  database: authPool,
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 12,
@@ -46,6 +48,9 @@ export const auth = betterAuth({
     },
   },
   advanced: {
+    ipAddress: {
+      ipAddressHeaders: ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"],
+    },
     cookiePrefix: "accounts-repo",
     defaultCookieAttributes: {
       sameSite: "lax",

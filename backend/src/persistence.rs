@@ -13,13 +13,21 @@ impl PersistentState {
             return Ok(None);
         };
 
+        Ok(Some(Self::connect(&database_url).await?))
+    }
+
+    pub async fn connect(database_url: &str) -> anyhow::Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(&database_url)
             .await?;
+        Self::from_pool(pool).await
+    }
+
+    pub async fn from_pool(pool: PgPool) -> anyhow::Result<Self> {
         let persistence = Self { pool };
         persistence.ensure_schema().await?;
-        Ok(Some(persistence))
+        Ok(persistence)
     }
 
     async fn ensure_schema(&self) -> anyhow::Result<()> {

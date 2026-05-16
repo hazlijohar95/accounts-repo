@@ -4,6 +4,8 @@ frontend/dist/
 frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+auth-service/dist/
+auth-service/*.tsbuildinfo
 test-results/
 playwright-report/
 .DS_Store

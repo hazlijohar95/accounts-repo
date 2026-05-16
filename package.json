@@ -9,7 +9,7 @@
     "dev:backend": "cargo run -p accounts-repo-backend",
     "build": "pnpm --dir frontend build",
     "test": "pnpm --dir frontend test -- --run",
-    "test:auth": "pnpm --dir auth-service typecheck",
+    "test:auth": "pnpm --dir auth-service test",
     "e2e": "pnpm --dir frontend exec playwright test -c ../playwright.config.ts"
   },
   "packageManager": "pnpm@10.11.0"
