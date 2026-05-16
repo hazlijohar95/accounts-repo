@@ -14,6 +14,7 @@ export interface RepoSummary {
 export interface Collaborator {
   user_id: string;
   display_name: string;
+  email: string;
   role: RepoRole;
 }
 
@@ -141,6 +142,9 @@ export interface ReviewQuery {
   title: string;
   status: "open" | "resolved";
   assigned_to: string;
+  resolved_note: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
 }
 
 export interface ReviewPack {
@@ -159,10 +163,16 @@ export interface ReviewPack {
 export interface AuditEvent {
   id: string;
   legal_entity_id: string;
+  sequence_number: number;
+  actor_user_id: string | null;
   actor_name: string;
+  actor_email: string;
   event_type: string;
   message: string;
   occurred_at: string;
+  related_commit_id: string | null;
+  previous_hash: string | null;
+  event_hash: string;
 }
 
 export interface RepoWorkspace {
@@ -175,12 +185,10 @@ export interface RepoWorkspace {
 }
 
 export interface ApprovalPayload {
-  actor_name: string;
   note?: string;
 }
 
 export interface CorrectionCommitPayload {
-  actor_name: string;
   message: string;
   reference: string;
   description: string;
@@ -203,13 +211,26 @@ export interface ImportWorkspacePayload {
   jurisdiction: string;
   entity_type: string;
   owner_name: string;
+  owner_email: string;
   firm_name: string;
   preparer_name: string;
+  preparer_email: string;
   reviewer_name: string;
+  reviewer_email: string;
   client_signer_name: string;
+  client_signer_email: string;
   branch_label: string;
   period_start: string;
   period_end: string;
   source_label: string;
   trial_balance: ImportTrialBalanceLine[];
+}
+
+export interface ReviewQueryPayload {
+  title: string;
+  assigned_to: string;
+}
+
+export interface ResolveReviewQueryPayload {
+  note: string;
 }

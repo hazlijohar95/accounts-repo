@@ -18,6 +18,16 @@ pub enum DomainError {
     FrozenBranch,
     #[error("adjustment must balance to zero")]
     UnbalancedAdjustment,
+    #[error("adjustment must include at least two lines")]
+    EmptyAdjustment,
+    #[error("review pack has open queries")]
+    BlockingQueriesOpen,
+    #[error("adjustment references unknown account {0}")]
+    UnknownAdjustmentAccount(String),
+    #[error("adjustment references unmapped account {0}")]
+    UnmappedAdjustmentAccount(String),
+    #[error("adjustment reference already exists: {0}")]
+    DuplicateAdjustmentReference(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +39,7 @@ pub struct Organization {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: Uuid,
+    pub auth_user_id: Option<String>,
     pub display_name: String,
     pub email: String,
 }
@@ -62,6 +73,7 @@ pub struct RepoSummary {
 pub struct Collaborator {
     pub user_id: Uuid,
     pub display_name: String,
+    pub email: String,
     pub role: RepoRole,
 }
 
@@ -134,6 +146,10 @@ pub struct Adjustment {
 
 impl Adjustment {
     pub fn validate(&self) -> Result<(), DomainError> {
+        if self.lines.is_empty() {
+            return Err(DomainError::EmptyAdjustment);
+        }
+
         let total = self.lines.iter().map(|line| line.amount).sum::<Decimal>();
 
         if total.is_zero() {
@@ -289,6 +305,9 @@ impl ReviewPack {
         if self.status == ReviewStatus::Signed {
             return Err(DomainError::AlreadySigned);
         }
+        if self.has_open_queries() {
+            return Err(DomainError::BlockingQueriesOpen);
+        }
         if self
             .approvals
             .iter()
@@ -317,6 +336,9 @@ impl ReviewPack {
         if self.status == ReviewStatus::Signed {
             return Err(DomainError::AlreadySigned);
         }
+        if self.has_open_queries() {
+            return Err(DomainError::BlockingQueriesOpen);
+        }
         if !self
             .approvals
             .iter()
@@ -342,6 +364,12 @@ impl ReviewPack {
         self.approvals.push(approval.clone());
         self.status = ReviewStatus::Signed;
         Ok(approval)
+    }
+
+    fn has_open_queries(&self) -> bool {
+        self.open_queries
+            .iter()
+            .any(|query| query.status == QueryStatus::Open)
     }
 }
 
@@ -375,6 +403,9 @@ pub struct ReviewQuery {
     pub title: String,
     pub status: QueryStatus,
     pub assigned_to: String,
+    pub resolved_note: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -388,10 +419,16 @@ pub enum QueryStatus {
 pub struct AuditEvent {
     pub id: Uuid,
     pub legal_entity_id: Uuid,
+    pub sequence_number: u64,
+    pub actor_user_id: Option<String>,
     pub actor_name: String,
+    pub actor_email: String,
     pub event_type: AuditEventType,
     pub message: String,
     pub occurred_at: DateTime<Utc>,
+    pub related_commit_id: Option<Uuid>,
+    pub previous_hash: Option<String>,
+    pub event_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -405,6 +442,9 @@ pub enum AuditEventType {
     ReviewerApproved,
     ClientSigned,
     CorrectionCommitted,
+    ReviewQueryOpened,
+    ReviewQueryResolved,
+    SignedPackExported,
 }
 
 pub fn create_commit(

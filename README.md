@@ -7,11 +7,21 @@ Accounts Repo is a GitHub-inspired financial data platform for client-owned acco
 ```bash
 pnpm install
 cargo test
-cargo run -p accounts-repo-backend
+docker compose up -d postgres
+pnpm --dir auth-service auth:migrate
+pnpm dev:auth
+DATABASE_URL=postgres://accounts_repo:accounts_repo@127.0.0.1:5432/accounts_repo cargo run -p accounts-repo-backend
 pnpm dev
 ```
 
-The backend runs on `http://127.0.0.1:8080` and the frontend runs on `http://127.0.0.1:5173`.
+The auth service runs on `http://127.0.0.1:8081`, the backend runs on `http://127.0.0.1:8080`, and the frontend runs on `http://127.0.0.1:5173`.
+
+If another local Postgres is already bound to port `5432`, start the compose database on an alternate host port and use that port in `DATABASE_URL`:
+
+```bash
+POSTGRES_HOST_PORT=5433 docker compose up -d postgres
+DATABASE_URL=postgres://accounts_repo:accounts_repo@127.0.0.1:5433/accounts_repo pnpm --dir auth-service auth:migrate --yes
+```
 
 ## Database
 
@@ -21,7 +31,31 @@ Postgres schema migrations are in `backend/migrations`. Start Postgres with:
 docker compose up -d postgres
 ```
 
-The local backend starts with an empty in-memory store. Import a mapped trial balance from the UI to create a real review workspace for the current session; this avoids confusing demo data with built product behavior. The schema is included for the production persistence layer.
+With `DATABASE_URL` set, the backend persists the app state to Postgres in `app_state_snapshots` and keeps commit snapshots plus audit hash-chain data in the domain payload. Without `DATABASE_URL`, the backend runs in empty in-memory mode for local smoke testing.
+
+## Authentication
+
+Better Auth is provided by `auth-service/` with email/password sessions and organization support. Production Rust API calls validate the Better Auth session through the auth service internal session endpoint. Local E2E uses explicit dev-auth headers only when `ACCOUNTS_REPO_AUTH_DISABLED_DEV=1` and `VITE_DEV_AUTH_EMAIL` are set.
+
+Required production environment variables:
+
+```bash
+DATABASE_URL=postgres://accounts_repo:accounts_repo@127.0.0.1:5432/accounts_repo
+BETTER_AUTH_SECRET=<32+ char high entropy secret>
+BETTER_AUTH_URL=http://127.0.0.1:5173
+AUTH_SERVICE_URL=http://127.0.0.1:8081
+AUTH_INTERNAL_TOKEN=<shared internal token>
+```
+
+## Verification
+
+```bash
+cargo test
+pnpm test:auth
+pnpm test
+pnpm build
+pnpm e2e
+```
 
 ## Real Data Import
 
@@ -43,3 +77,4 @@ account_code,account_name,account_type,amount,fs_line,assertion
 - Review pack: accountant-native pull request.
 - Diff: financial statement impact diff.
 - Audit trail: immutable event stream.
+- Signed export: JSON evidence pack after client sign-off.

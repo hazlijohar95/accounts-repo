@@ -12,8 +12,10 @@ const repo: LegalEntityRepo = {
   jurisdiction: "Malaysia",
   entity_type: "Sdn Bhd",
   collaborators: [
-    { user_id: "u1", display_name: "Hazli Johar", role: "owner" },
-    { user_id: "u2", display_name: "Aina Rahman", role: "preparer" },
+    { user_id: "u1", display_name: "Hazli Johar", email: "hazli@nusantara.test", role: "owner" },
+    { user_id: "u2", display_name: "Aina Rahman", email: "aina@ahadvisory.test", role: "preparer" },
+    { user_id: "u3", display_name: "Amjad Salleh", email: "aina@ahadvisory.test", role: "reviewer" },
+    { user_id: "u4", display_name: "Hazli Johar", email: "aina@ahadvisory.test", role: "client_signer" },
   ],
   summary: {
     active_branch_label: "FY2026 Year-End",
@@ -86,14 +88,7 @@ const workspace: RepoWorkspace = {
     title: "FY2026 Sdn Bhd Year-End Review Pack",
     status: "in_review",
     approvals: [],
-    open_queries: [
-      {
-        id: "query-1",
-        title: "Confirm professional fee accrual",
-        status: "open",
-        assigned_to: "Hazli Johar",
-      },
-    ],
+    open_queries: [],
     created_by: "Aina Rahman",
     created_at: "2026-05-16T00:00:00Z",
   },
@@ -197,16 +192,19 @@ describe("review pack workflow", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: /Import a real trial balance/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Import a mapped trial balance/ })).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Entity name"), "Nusantara Precision Sdn Bhd");
     await user.type(screen.getByLabelText("Registration number"), "202001034561 (1390882-X)");
     await user.type(screen.getByLabelText("Owner"), "Hazli Johar");
+    await user.type(screen.getByLabelText("Owner email"), "hazli@nusantara.test");
     await user.clear(screen.getByLabelText("Firm"));
     await user.type(screen.getByLabelText("Firm"), "Amjad & Hazli Advisory");
     await user.type(screen.getByLabelText("Preparer"), "Aina Rahman");
     await user.type(screen.getByLabelText("Reviewer"), "Amjad Salleh");
+    await user.type(screen.getByLabelText("Reviewer email"), "aina@ahadvisory.test");
     await user.type(screen.getByLabelText("Client signer"), "Hazli Johar");
+    await user.type(screen.getByLabelText("Client signer email"), "aina@ahadvisory.test");
     await user.type(screen.getByLabelText("Branch label"), "FY2026 Year-End");
     await user.type(screen.getByLabelText("Period start"), "2025-07-01");
     await user.type(screen.getByLabelText("Period end"), "2026-06-30");
@@ -221,11 +219,25 @@ describe("review pack workflow", () => {
     expect(await screen.findByRole("heading", { name: "Nusantara Precision Sdn Bhd" })).toBeInTheDocument();
     expect(capturedImport).toMatchObject({
       entity_name: "Nusantara Precision Sdn Bhd",
+      reviewer_email: "aina@ahadvisory.test",
+      client_signer_email: "aina@ahadvisory.test",
       trial_balance: [
         { account_code: "1000", amount: "1000.00" },
         { account_code: "4000", amount: "-1000.00" },
       ],
     });
+  });
+
+  it("keeps the empty import screen focused by hiding retry until an API error exists", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } })) satisfies typeof fetch,
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /Import a mapped trial balance/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry API connection" })).not.toBeInTheDocument();
   });
 
   it("prevents client signoff button before reviewer approval is recorded", async () => {
@@ -239,6 +251,32 @@ describe("review pack workflow", () => {
     expect(screen.getByLabelText("Source data notice")).toHaveTextContent("TB");
     expect(screen.getByRole("button", { name: "Approve as reviewer" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Sign as client" })).not.toBeInTheDocument();
+  });
+
+  it("prevents role-mismatched reviewer actions from appearing in the UI", async () => {
+    const preparerOnlyWorkspace: RepoWorkspace = {
+      ...workspace,
+      repo: {
+        ...workspace.repo,
+        collaborators: workspace.repo.collaborators.map((collaborator) =>
+          collaborator.role === "reviewer"
+            ? { ...collaborator, email: "amjad@ahadvisory.test" }
+            : collaborator.role === "client_signer"
+              ? { ...collaborator, email: "hazli@nusantara.test" }
+              : collaborator,
+        ),
+      },
+    };
+    stubWorkspaceFetch(preparerOnlyWorkspace, [preparerOnlyWorkspace.repo]);
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Nusantara Precision Sdn Bhd" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve as reviewer" })).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewer approval is waiting for an assigned reviewer.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Append correction" })).toBeEnabled();
   });
 
   it("prevents frozen signed branches from appending correction commits in the UI", async () => {

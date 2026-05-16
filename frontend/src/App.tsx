@@ -3,13 +3,16 @@ import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
   approveReviewer,
   commitCorrection,
+  exportSignedPack,
   getRepoWorkspace,
   importWorkspace,
   listRepos,
+  openReviewQuery,
+  resolveReviewQuery,
   signClient,
 } from "./api";
+import { authClient, useAuthSession } from "./auth-client";
 import {
-  absoluteDecimal,
   branchStatusLabel,
   decimal,
   formatCurrency,
@@ -27,6 +30,8 @@ import type {
   ImportWorkspacePayload,
   LegalEntityRepo,
   RepoWorkspace,
+  RepoRole,
+  ReviewQuery,
   ReviewStatus,
   TrialBalanceLine,
 } from "./types";
@@ -34,6 +39,22 @@ import type {
 type WorkspaceTab = "review" | "commits" | "statements" | "trial-balance" | "audit";
 
 export function App() {
+  const session = useAuthSession();
+
+  if (session.isPending) return <LoadingScreen />;
+
+  if (!session.data?.user) {
+    return <AuthScreen onAuthChanged={() => void session.refetch()} />;
+  }
+
+  return <WorkspaceApp currentUser={session.data.user} />;
+}
+
+function WorkspaceApp({
+  currentUser,
+}: {
+  currentUser: { id: string; name: string; email: string };
+}) {
   const [repos, setRepos] = useState<LegalEntityRepo[]>([]);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<RepoWorkspace | null>(null);
@@ -107,6 +128,7 @@ export function App() {
       setSelectedRepoId(importedWorkspace.repo.id);
       setWorkspace(importedWorkspace);
       setActiveTab("review");
+      scrollToTop();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Import failed");
     } finally {
@@ -124,6 +146,7 @@ export function App() {
       setSelectedRepoId(repoId);
       setWorkspace(nextWorkspace);
       setActiveTab("review");
+      scrollToTop();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to load selected repo");
     } finally {
@@ -140,6 +163,7 @@ export function App() {
         importing={actionPending === "import"}
         onImport={(payload) => void handleImport(payload)}
         onRetry={() => void loadInitial()}
+        currentUser={currentUser}
       />
     );
   }
@@ -164,8 +188,10 @@ export function App() {
     <main className="app-shell" aria-busy={actionPending !== null}>
       <RepoSidebar
         actionPending={actionPending}
+        currentUser={currentUser}
         headCommit={headCommit}
         onRepoSelect={handleRepoSelect}
+        onSignOut={() => void authClient.signOut().then(() => window.location.reload())}
         repos={repos}
         selectedRepoId={selectedRepoId}
         workspace={workspace}
@@ -184,7 +210,7 @@ export function App() {
 
         {error ? <div className="toast error-copy" role="alert">{error}</div> : null}
 
-        <section className="tab-panel" role="tabpanel">
+        <section aria-labelledby={`tab-${activeTab}`} className="tab-panel" id={`panel-${activeTab}`} role="tabpanel">
           {activeTab === "review" ? (
             <ReviewWorkspace
               actionPending={actionPending}
@@ -194,7 +220,6 @@ export function App() {
               onApprove={() =>
                 void runAction("approve", async () => {
                   await approveReviewer(workspace.review_pack.id, {
-                    actor_name: collaboratorName(workspace, "reviewer"),
                     note: "Reviewed TB mapping, adjustment rationale, and FS impact diff.",
                   });
                 })
@@ -204,14 +229,35 @@ export function App() {
                   await commitCorrection(workspace.repo.id, workspace.branch.id, payload);
                 })
               }
+              onOpenQuery={(title) =>
+                void runAction("open-query", async () => {
+                  await openReviewQuery(workspace.review_pack.id, {
+                    title,
+                    assigned_to: collaboratorName(workspace, "preparer"),
+                  });
+                })
+              }
+              onResolveQuery={(query) =>
+                void runAction(`resolve:${query.id}`, async () => {
+                  await resolveReviewQuery(workspace.review_pack.id, query.id, {
+                    note: `Resolved by ${query.assigned_to}`,
+                  });
+                })
+              }
+              onExportSignedPack={() =>
+                void runAction("export", async () => {
+                  const payload = await exportSignedPack(workspace.review_pack.id);
+                  downloadJson(`${workspace.repo.name}-${workspace.branch.label}-signed-pack.json`, payload);
+                })
+              }
               onSign={() =>
                 void runAction("sign", async () => {
                   await signClient(workspace.review_pack.id, {
-                    actor_name: collaboratorName(workspace, "client_signer"),
                     note: `Director sign-off for the ${workspace.branch.label} pack.`,
                   });
                 })
               }
+              currentUser={currentUser}
               workspace={workspace}
             />
           ) : null}
@@ -228,15 +274,19 @@ export function App() {
 
 function RepoSidebar({
   actionPending,
+  currentUser,
   headCommit,
   onRepoSelect,
+  onSignOut,
   repos,
   selectedRepoId,
   workspace,
 }: {
   actionPending: string | null;
+  currentUser: { name: string; email: string };
   headCommit: Commit;
   onRepoSelect: (repoId: string) => Promise<void>;
+  onSignOut: () => void;
   repos: LegalEntityRepo[];
   selectedRepoId: string | null;
   workspace: RepoWorkspace;
@@ -290,6 +340,14 @@ function RepoSidebar({
       </section>
 
       <section className="sidebar-section sidebar-section--bottom">
+        <p className="section-label">Signed in</p>
+        <KeyValue label={currentUser.name} value={currentUser.email} />
+        <button className="secondary-button" onClick={onSignOut} type="button">
+          Sign out
+        </button>
+      </section>
+
+      <section className="sidebar-section">
         <p className="section-label">Custody</p>
         {workspace.repo.collaborators.map((collaborator) => (
           <KeyValue
@@ -349,8 +407,10 @@ function RepoTabs({
         const active = item.tab === activeTab;
         return (
           <button
+            aria-controls={`panel-${item.tab}`}
             aria-selected={active}
             className={active ? "tab-button tab-button--active" : "tab-button"}
+            id={`tab-${item.tab}`}
             key={item.tab}
             onClick={() => onTabChange(item.tab)}
             role="tab"
@@ -365,12 +425,85 @@ function RepoTabs({
   );
 }
 
+function AuthScreen({ onAuthChanged }: { onAuthChanged: () => void }) {
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [name, setName] = useState("Aina Rahman");
+  const [email, setEmail] = useState("aina@ahadvisory.test");
+  const [password, setPassword] = useState("accounts-repo-demo-2026");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError(null);
+
+    const result = mode === "sign-up"
+      ? await authClient.signUp.email({ email, password, name })
+      : await authClient.signIn.email({ email, password });
+
+    setPending(false);
+    if (result.error) {
+      setError(result.error.message ?? "Authentication failed");
+      return;
+    }
+
+    onAuthChanged();
+  }
+
+  return (
+    <main className="empty-state empty-state--auth">
+      <section className="import-intro">
+        <p className="eyebrow">Accounts Repo</p>
+        <h1>Sign in to a role-bound financial repo.</h1>
+        <p className="empty-copy">
+          Approvals, corrections, and signed exports are tied to your authenticated identity.
+        </p>
+      </section>
+
+      <form className="import-panel" onSubmit={(event) => void handleSubmit(event)}>
+        <div>
+          <p className="section-label">Better Auth</p>
+          <h2>{mode === "sign-up" ? "Create account" : "Sign in"}</h2>
+        </div>
+        {mode === "sign-up" ? (
+          <label>
+            Name
+            <input required value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+        ) : null}
+        <label>
+          Email
+          <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+        </label>
+        <label>
+          Password
+          <input required minLength={12} type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+        </label>
+        {error ? <p className="error-copy" role="alert">{error}</p> : null}
+        <button className="primary-button" disabled={pending} type="submit">
+          {pending ? "Checking..." : mode === "sign-up" ? "Create account" : "Sign in"}
+        </button>
+        <button
+          className="secondary-button"
+          onClick={() => setMode(mode === "sign-up" ? "sign-in" : "sign-up")}
+          type="button"
+        >
+          {mode === "sign-up" ? "Use existing account" : "Create a new account"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
 function ImportEmptyState({
+  currentUser,
   error,
   importing,
   onImport,
   onRetry,
 }: {
+  currentUser: { name: string; email: string };
   error: string | null;
   importing: boolean;
   onImport: (payload: ImportWorkspacePayload) => void;
@@ -380,26 +513,30 @@ function ImportEmptyState({
     <main className="empty-state empty-state--import">
       <section className="import-intro">
         <p className="eyebrow">Accounts Repo</p>
-        <h1>Import a real trial balance to open a financial repo.</h1>
+        <h1>Import a mapped trial balance to open a review repo.</h1>
         <p className="empty-copy">
-          Local development now starts empty on purpose. Use your own mapped TB export so the
-          review pack, commit history, diff, and audit trail reflect data you can verify.
+          Start with source data you can trace. The import preview will become the first commit,
+          then reviewers can approve and clients can sign a locked evidence pack.
         </p>
         {error ? <p className="error-copy" role="alert">{error}</p> : null}
-        <button className="secondary-button" onClick={onRetry} type="button">
-          Retry API connection
-        </button>
+        {error ? (
+          <button className="secondary-button" onClick={onRetry} type="button">
+            Retry API connection
+          </button>
+        ) : null}
       </section>
 
-      <ImportWorkspaceForm importing={importing} onImport={onImport} />
+      <ImportWorkspaceForm currentUser={currentUser} importing={importing} onImport={onImport} />
     </main>
   );
 }
 
 function ImportWorkspaceForm({
+  currentUser,
   importing,
   onImport,
 }: {
+  currentUser: { name: string; email: string };
   importing: boolean;
   onImport: (payload: ImportWorkspacePayload) => void;
 }) {
@@ -408,10 +545,14 @@ function ImportWorkspaceForm({
   const [jurisdiction, setJurisdiction] = useState("Malaysia");
   const [entityType, setEntityType] = useState("Sdn Bhd");
   const [ownerName, setOwnerName] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
   const [firmName, setFirmName] = useState("Amjad & Hazli Advisory");
-  const [preparerName, setPreparerName] = useState("");
+  const [preparerName, setPreparerName] = useState(currentUser.name);
+  const [preparerEmail, setPreparerEmail] = useState(currentUser.email);
   const [reviewerName, setReviewerName] = useState("");
+  const [reviewerEmail, setReviewerEmail] = useState("");
   const [clientSignerName, setClientSignerName] = useState("");
+  const [clientSignerEmail, setClientSignerEmail] = useState("");
   const [branchLabel, setBranchLabel] = useState("");
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
@@ -431,10 +572,14 @@ function ImportWorkspaceForm({
         jurisdiction,
         entity_type: entityType,
         owner_name: ownerName,
+        owner_email: ownerEmail,
         firm_name: firmName,
         preparer_name: preparerName,
+        preparer_email: preparerEmail,
         reviewer_name: reviewerName,
+        reviewer_email: reviewerEmail,
         client_signer_name: clientSignerName,
+        client_signer_email: clientSignerEmail,
         branch_label: branchLabel,
         period_start: periodStart,
         period_end: periodEnd,
@@ -486,6 +631,10 @@ function ImportWorkspaceForm({
           <input required value={ownerName} onChange={(event) => setOwnerName(event.target.value)} />
         </label>
         <label>
+          Owner email
+          <input required type="email" value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} />
+        </label>
+        <label>
           Firm
           <input required value={firmName} onChange={(event) => setFirmName(event.target.value)} />
         </label>
@@ -494,12 +643,24 @@ function ImportWorkspaceForm({
           <input required value={preparerName} onChange={(event) => setPreparerName(event.target.value)} />
         </label>
         <label>
+          Preparer email
+          <input required type="email" value={preparerEmail} onChange={(event) => setPreparerEmail(event.target.value)} />
+        </label>
+        <label>
           Reviewer
           <input required value={reviewerName} onChange={(event) => setReviewerName(event.target.value)} />
         </label>
         <label>
+          Reviewer email
+          <input required type="email" value={reviewerEmail} onChange={(event) => setReviewerEmail(event.target.value)} />
+        </label>
+        <label>
           Client signer
           <input required value={clientSignerName} onChange={(event) => setClientSignerName(event.target.value)} />
+        </label>
+        <label>
+          Client signer email
+          <input required type="email" value={clientSignerEmail} onChange={(event) => setClientSignerEmail(event.target.value)} />
         </label>
         <label>
           Branch label
@@ -542,24 +703,33 @@ function ImportWorkspaceForm({
 function ReviewWorkspace({
   actionPending,
   branchFrozen,
+  currentUser,
   firstCommit,
   headCommit,
   onApprove,
   onCommitCorrection,
+  onExportSignedPack,
+  onOpenQuery,
+  onResolveQuery,
   onSign,
   workspace,
 }: {
   actionPending: string | null;
   branchFrozen: boolean;
+  currentUser: { email: string };
   firstCommit: Commit;
   headCommit: Commit;
   onApprove: () => void;
   onCommitCorrection: (payload: CorrectionCommitPayload) => void;
+  onExportSignedPack: () => void;
+  onOpenQuery: (title: string) => void;
+  onResolveQuery: (query: ReviewQuery) => void;
   onSign: () => void;
   workspace: RepoWorkspace;
 }) {
   const [correctionOpen, setCorrectionOpen] = useState(false);
-  const preparerName = collaboratorName(workspace, "preparer");
+  const roles = currentUserRoles(workspace, currentUser.email);
+  const canCommitCorrection = hasAnyRole(roles, ["preparer", "owner"]);
 
   return (
     <div className="review-layout">
@@ -569,6 +739,8 @@ function ReviewWorkspace({
           action={
             branchFrozen ? (
               <span className="action-note">Corrections closed</span>
+            ) : !canCommitCorrection ? (
+              <span className="action-note">Preparer only</span>
             ) : (
               <button
                 className="secondary-button"
@@ -593,33 +765,39 @@ function ReviewWorkspace({
             <table>
               <thead>
                 <tr>
-                  <th>FS line</th>
-                  <th>Before</th>
-                  <th>After</th>
-                  <th>Change</th>
+                  <th scope="col">FS line</th>
+                  <th className="numeric" scope="col">Before</th>
+                  <th className="numeric" scope="col">After</th>
+                  <th className="numeric" scope="col">Change</th>
                 </tr>
               </thead>
               <tbody>
-                {workspace.fs_impact_diff.changed_fs_lines.map((line) => (
-                  <tr key={line.fs_line}>
-                    <td>{line.fs_line}</td>
-                    <td>{formatCurrency(line.before, true)}</td>
-                    <td>{formatCurrency(line.after, true)}</td>
-                    <td className={decimal(line.change) < 0 ? "negative" : "positive"}>
-                      {formatSignedCurrency(line.change)}
-                    </td>
+                {workspace.fs_impact_diff.changed_fs_lines.length === 0 ? (
+                  <tr>
+                    <td colSpan={4}>No FS line changes in this comparison.</td>
                   </tr>
-                ))}
+                ) : (
+                  workspace.fs_impact_diff.changed_fs_lines.map((line) => (
+                    <tr key={line.fs_line}>
+                      <td>{line.fs_line}</td>
+                      <td className="numeric">{formatCurrency(line.before, true)}</td>
+                      <td className="numeric">{formatCurrency(line.after, true)}</td>
+                      <td className={`numeric ${decimal(line.change) < 0 ? "negative" : "positive"}`}>
+                        {formatSignedCurrency(line.change)}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
+          <p className="table-hint">Swipe sideways to review before, after, and change columns.</p>
         </Panel>
 
-        {correctionOpen && !branchFrozen ? (
+        {correctionOpen && !branchFrozen && canCommitCorrection ? (
           <CorrectionCommitForm
             actionPending={actionPending}
             adjustmentsCount={headCommit.snapshot.adjustments.length}
-            defaultActorName={preparerName}
             onSubmit={onCommitCorrection}
             trialBalance={headCommit.snapshot.trial_balance}
           />
@@ -629,7 +807,11 @@ function ReviewWorkspace({
       <ReviewPackPanel
         actionPending={actionPending}
         branchFrozen={branchFrozen}
+        currentUserRoles={roles}
         onApprove={onApprove}
+        onExportSignedPack={onExportSignedPack}
+        onOpenQuery={onOpenQuery}
+        onResolveQuery={onResolveQuery}
         onSign={onSign}
         pack={workspace.review_pack}
       />
@@ -640,17 +822,14 @@ function ReviewWorkspace({
 function CorrectionCommitForm({
   actionPending,
   adjustmentsCount,
-  defaultActorName,
   onSubmit,
   trialBalance,
 }: {
   actionPending: string | null;
   adjustmentsCount: number;
-  defaultActorName: string;
   onSubmit: (payload: CorrectionCommitPayload) => void;
   trialBalance: TrialBalanceLine[];
 }) {
-  const [actorName, setActorName] = useState(defaultActorName);
   const [message, setMessage] = useState("Append correction");
   const [reference, setReference] = useState(`AJ-${String(adjustmentsCount + 1).padStart(3, "0")}`);
   const [description, setDescription] = useState("");
@@ -659,11 +838,12 @@ function CorrectionCommitForm({
   const [debitAmount, setDebitAmount] = useState("");
   const [creditCode, setCreditCode] = useState("");
   const [creditAmount, setCreditAmount] = useState("");
+  const runningBalance = decimal(debitAmount) + decimal(creditAmount);
+  const isBalanced = debitAmount.trim() !== "" && creditAmount.trim() !== "" && runningBalance === 0;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     onSubmit({
-      actor_name: actorName,
       message,
       reference,
       description,
@@ -685,10 +865,6 @@ function CorrectionCommitForm({
       </header>
 
       <div className="form-grid">
-        <label>
-          Actor
-          <input required value={actorName} onChange={(event) => setActorName(event.target.value)} />
-        </label>
         <label>
           Reference
           <input required value={reference} onChange={(event) => setReference(event.target.value)} />
@@ -735,7 +911,11 @@ function CorrectionCommitForm({
         </label>
       </div>
 
-      <button className="primary-button" disabled={actionPending !== null} type="submit">
+      <p className={isBalanced ? "balance-note balance-note--ok" : "balance-note"}>
+        Running balance: {formatSignedCurrency(runningBalance.toFixed(2))}. Corrections must net to zero.
+      </p>
+
+      <button className="primary-button" disabled={actionPending !== null || !isBalanced} type="submit">
         {actionPending === "correction" ? "Appending..." : "Commit correction"}
       </button>
     </form>
@@ -786,29 +966,56 @@ function ReviewPackPanel({
   pack,
   actionPending,
   branchFrozen,
+  currentUserRoles,
   onApprove,
+  onExportSignedPack,
+  onOpenQuery,
+  onResolveQuery,
   onSign,
 }: {
   pack: RepoWorkspace["review_pack"];
   actionPending: string | null;
   branchFrozen: boolean;
+  currentUserRoles: RepoRole[];
   onApprove: () => void;
+  onExportSignedPack: () => void;
+  onOpenQuery: (title: string) => void;
+  onResolveQuery: (query: ReviewQuery) => void;
   onSign: () => void;
 }) {
+  const [queryTitle, setQueryTitle] = useState("");
   const hasReviewerApproval = pack.approvals.some((approval) => approval.role === "reviewer");
   const hasClientSignature = pack.approvals.some((approval) => approval.role === "client_director");
-  const openQueryLabel = `${pack.open_queries.length} open ${pack.open_queries.length === 1 ? "query" : "queries"}`;
-  const nextAction = !branchFrozen && pack.status === "in_review"
+  const openQueries = pack.open_queries.filter((query) => query.status === "open");
+  const hasOpenQueries = openQueries.length > 0;
+  const canOpenQuery = hasAnyRole(currentUserRoles, ["preparer", "reviewer", "owner"]);
+  const canApprove = hasAnyRole(currentUserRoles, ["reviewer"]);
+  const canSign = hasAnyRole(currentUserRoles, ["client_signer", "owner"]);
+  const canExportSignedPack = hasAnyRole(currentUserRoles, ["owner", "client_signer", "reviewer"]);
+  const querySummary = hasOpenQueries
+    ? `${openQueries.length} open ${openQueries.length === 1 ? "query" : "queries"}`
+    : pack.open_queries.length > 0
+      ? "All queries resolved"
+      : "No open queries";
+  const nextAction = !branchFrozen && pack.status === "in_review" && canApprove
     ? {
         label: actionPending === "approve" ? "Approving..." : "Approve as reviewer",
         onClick: onApprove,
       }
-    : !branchFrozen && pack.status === "reviewer_approved"
+    : !branchFrozen && pack.status === "reviewer_approved" && canSign
       ? {
           label: actionPending === "sign" ? "Signing..." : "Sign as client",
           onClick: onSign,
         }
       : null;
+
+  function handleQuerySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const title = queryTitle.trim();
+    if (!title) return;
+    onOpenQuery(title);
+    setQueryTitle("");
+  }
 
   return (
     <aside className="review-card" aria-label="Review pack">
@@ -818,34 +1025,82 @@ function ReviewPackPanel({
         <StatusPill status={pack.status} />
       </div>
 
+      {!branchFrozen && canOpenQuery ? (
+        <form className="query-composer" onSubmit={handleQuerySubmit}>
+          <label htmlFor="review-query-title">Review query</label>
+          <div className="query-composer__row">
+            <input
+              disabled={actionPending !== null}
+              id="review-query-title"
+              onChange={(event) => setQueryTitle(event.target.value)}
+              placeholder="What must be resolved before approval?"
+              value={queryTitle}
+            />
+            <button className="secondary-button" disabled={actionPending !== null || !queryTitle.trim()} type="submit">
+              {actionPending === "open-query" ? "Opening..." : "Open query"}
+            </button>
+          </div>
+        </form>
+      ) : null}
+
       <div className="approval-stack">
         <ApprovalStep complete={hasReviewerApproval} label="Reviewer approval" />
         <ApprovalStep complete={hasClientSignature} label="Client director sign-off" />
       </div>
 
       {pack.open_queries.length > 0 ? (
-        <details className="query-box">
-          <summary>{openQueryLabel}</summary>
+        <section className="query-box" aria-label="Review queries">
+          <header className="query-box__head">
+            <strong>{querySummary}</strong>
+            <span>{pack.open_queries.length} total</span>
+          </header>
           {pack.open_queries.map((query) => (
-            <p key={query.id}>{query.title}</p>
+            <div className="query-row" key={query.id}>
+              <div>
+                <p>{query.title}</p>
+                <small>
+                  Assigned to {query.assigned_to} · {query.status === "open" ? "Open" : "Resolved"}
+                </small>
+              </div>
+              {query.status === "open" ? (
+                <button className="secondary-button" disabled={actionPending !== null} onClick={() => onResolveQuery(query)} type="button">
+                  {actionPending === `resolve:${query.id}` ? "Resolving..." : "Resolve query"}
+                </button>
+              ) : null}
+            </div>
           ))}
-        </details>
+        </section>
       ) : (
         <p className="quiet-note">No open queries.</p>
       )}
 
+      {hasOpenQueries ? (
+        <p className="action-note">Resolve open queries before approval or sign-off.</p>
+      ) : null}
+
       {nextAction ? (
         <button
           className="primary-button"
-          disabled={actionPending !== null}
-          onClick={nextAction.onClick}
+          disabled={actionPending !== null || hasOpenQueries}
+          onClick={() => {
+            const confirmed = window.confirm(
+              `${nextAction.label.replace("...", "")}\n\nThis records your authenticated identity and current financial snapshot in the audit trail.`,
+            );
+            if (confirmed) nextAction.onClick();
+          }}
           type="button"
         >
           {nextAction.label}
         </button>
       ) : (
-        <p className="action-note">Signed branches are immutable.</p>
+        <p className="action-note">{reviewActionMessage({ branchFrozen, canApprove, canSign, status: pack.status })}</p>
       )}
+
+      {branchFrozen && canExportSignedPack ? (
+        <button className="secondary-button" disabled={actionPending !== null} onClick={onExportSignedPack} type="button">
+          Download signed export
+        </button>
+      ) : null}
     </aside>
   );
 }
@@ -854,9 +1109,8 @@ function CommitPanel({ commits }: { commits: Commit[] }) {
   return (
     <Panel meta={`${commits.length} append-only snapshots`} title="Commit history">
       <div className="commit-list">
-        {[...commits].reverse().map((commit) => (
-          <CommitRow commit={commit} key={commit.id} />
-        ))}
+        {commits.length === 0 ? <p className="quiet-note">No commits yet.</p> : null}
+        {[...commits].reverse().map((commit) => <CommitRow commit={commit} key={commit.id} />)}
       </div>
     </Panel>
   );
@@ -866,9 +1120,8 @@ function StatementsPanel({ lines }: { lines: FinancialStatementLine[] }) {
   return (
     <Panel meta={`${lines.length} mapped lines`} title="Mapped financial statements">
       <div className="fs-grid">
-        {lines.map((line) => (
-          <FsLineCard line={line} key={line.fs_line} />
-        ))}
+        {lines.length === 0 ? <p className="quiet-note">No mapped FS lines yet.</p> : null}
+        {lines.map((line) => <FsLineCard line={line} key={line.fs_line} />)}
       </div>
     </Panel>
   );
@@ -881,10 +1134,10 @@ function TrialBalancePanel({ commit }: { commit: Commit }) {
         <table>
           <thead>
             <tr>
-              <th>Code</th>
-              <th>Account</th>
-              <th>Type</th>
-              <th>TB amount</th>
+              <th scope="col">Code</th>
+              <th scope="col">Account</th>
+              <th scope="col">Type</th>
+              <th className="numeric" scope="col">TB amount</th>
             </tr>
           </thead>
           <tbody>
@@ -893,12 +1146,13 @@ function TrialBalancePanel({ commit }: { commit: Commit }) {
                 <td className="mono">{line.account_code}</td>
                 <td>{line.account_name}</td>
                 <td>{roleLabel(line.account_type)}</td>
-                <td>{formatCurrency(line.amount, true)}</td>
+                <td className="numeric">{formatCurrency(line.amount, true)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      <p className="table-hint">Swipe sideways to inspect all source amount columns.</p>
     </Panel>
   );
 }
@@ -907,12 +1161,13 @@ function AuditPanel({ workspace }: { workspace: RepoWorkspace }) {
   return (
     <Panel meta={`${workspace.audit_events.length} preserved events`} title="Audit trail">
       <div className="audit-list">
+        {workspace.audit_events.length === 0 ? <p className="quiet-note">No audit events yet.</p> : null}
         {[...workspace.audit_events].reverse().map((event) => (
           <article className="audit-row" key={event.id}>
-            <strong>{roleLabel(event.event_type)}</strong>
+            <strong>{event.sequence_number}. {roleLabel(event.event_type)}</strong>
             <p>{event.message}</p>
             <small>
-              {event.actor_name} · {formatDate(event.occurred_at)}
+              {event.actor_name} ({event.actor_email}) · {formatDate(event.occurred_at)} · hash {formatHash(event.event_hash)}
             </small>
           </article>
         ))}
@@ -1002,7 +1257,7 @@ function FsLineCard({ line }: { line: FinancialStatementLine }) {
     <article className="fs-card">
       <span>{accountCount} accounts</span>
       <strong>{line.fs_line}</strong>
-      <p className={amount < 0 ? "negative" : "positive"}>{formatCurrency(absoluteDecimal(line.amount), true)}</p>
+      <p className={amount < 0 ? "negative" : "positive"}>{formatSignedCurrency(line.amount)}</p>
     </article>
   );
 }
@@ -1011,12 +1266,54 @@ function collaboratorName(workspace: RepoWorkspace, role: "preparer" | "reviewer
   return workspace.repo.collaborators.find((collaborator) => collaborator.role === role)?.display_name ?? roleLabel(role);
 }
 
+function currentUserRoles(workspace: RepoWorkspace, email: string): RepoRole[] {
+  return workspace.repo.collaborators
+    .filter((collaborator) => collaborator.email.toLowerCase() === email.toLowerCase())
+    .map((collaborator) => collaborator.role);
+}
+
+function hasAnyRole(actual: RepoRole[], allowed: RepoRole[]) {
+  return actual.some((role) => allowed.includes(role));
+}
+
+function reviewActionMessage({
+  branchFrozen,
+  canApprove,
+  canSign,
+  status,
+}: {
+  branchFrozen: boolean;
+  canApprove: boolean;
+  canSign: boolean;
+  status: ReviewStatus;
+}) {
+  if (branchFrozen) return "Signed branches are immutable.";
+  if (status === "in_review" && !canApprove) return "Reviewer approval is waiting for an assigned reviewer.";
+  if (status === "reviewer_approved" && !canSign) return "Client sign-off is waiting for the owner or signer.";
+  return "Review steps are complete.";
+}
+
 function workspaceSourceLabel(trialBalance: TrialBalanceLine[]) {
   const labels = Array.from(new Set(trialBalance.map((line) => line.source_label).filter(Boolean)));
 
   if (labels.length === 0) return "No imported trial balance source is attached.";
   if (labels.length === 1) return labels[0];
   return `${labels.length} imported sources`;
+}
+
+function downloadJson(filename: string, payload: unknown) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename.replaceAll(/[^a-z0-9_.-]+/gi, "-").toLowerCase();
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function scrollToTop() {
+  if (import.meta.env.MODE === "test") return;
+  window.requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
 }
 
 function parseTrialBalanceCsv(csvText: string): ImportTrialBalanceLine[] {

@@ -1,7 +1,15 @@
-use accounts_repo_backend::{AppState, app, store::AppStore};
+use accounts_repo_backend::{
+    AppState, app,
+    auth::AuthConfig,
+    domain::{
+        AuditEvent, AuditEventType, LegalEntityRepo, QueryStatus, ReviewPack, ReviewQuery,
+        ReviewStatus,
+    },
+    store::{AppStore, RepoWorkspace},
+};
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, request::Builder},
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -12,18 +20,65 @@ use tower::ServiceExt;
 fn test_app() -> axum::Router {
     app(AppState {
         store: Arc::new(RwLock::new(AppStore::seeded())),
+        auth: AuthConfig::disabled_dev(),
+        persistence: None,
     })
 }
 
 fn empty_test_app() -> axum::Router {
     app(AppState {
         store: Arc::new(RwLock::new(AppStore::empty())),
+        auth: AuthConfig::disabled_dev(),
+        persistence: None,
     })
 }
 
 async fn read_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn reviewer_headers(builder: Builder) -> Builder {
+    builder
+        .header("x-dev-user-id", "seed-reviewer")
+        .header("x-dev-user-name", "Amjad Salleh")
+        .header("x-dev-user-email", "amjad@ahadvisory.test")
+}
+
+fn owner_headers(builder: Builder) -> Builder {
+    builder
+        .header("x-dev-user-id", "seed-owner")
+        .header("x-dev-user-name", "Hazli Johar")
+        .header("x-dev-user-email", "hazli@nusantara.test")
+}
+
+async fn seeded_repo_workspace(app: &axum::Router) -> (LegalEntityRepo, RepoWorkspace) {
+    let repos_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/repos")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let repos: Vec<LegalEntityRepo> = read_json(repos_response).await;
+    let repo = repos[0].clone();
+
+    let workspace_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/repos/{}", repo.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let workspace = read_json(workspace_response).await;
+
+    (repo, workspace)
 }
 
 #[tokio::test]
@@ -135,6 +190,9 @@ async fn rejects_client_signoff_without_reviewer_approval_through_http() {
                     "/api/review-packs/{}/client-signoff",
                     workspace.review_pack.id
                 ))
+                .header("x-dev-user-id", "seed-owner")
+                .header("x-dev-user-name", "Hazli Johar")
+                .header("x-dev-user-email", "hazli@nusantara.test")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -282,6 +340,9 @@ async fn rejects_correction_commit_after_client_signoff_through_http() {
                     "/api/review-packs/{}/reviewer-approval",
                     before.review_pack.id
                 ))
+                .header("x-dev-user-id", "seed-reviewer")
+                .header("x-dev-user-name", "Amjad Salleh")
+                .header("x-dev-user-email", "amjad@ahadvisory.test")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -305,6 +366,9 @@ async fn rejects_correction_commit_after_client_signoff_through_http() {
                     "/api/review-packs/{}/client-signoff",
                     before.review_pack.id
                 ))
+                .header("x-dev-user-id", "seed-owner")
+                .header("x-dev-user-name", "Hazli Johar")
+                .header("x-dev-user-email", "hazli@nusantara.test")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -348,7 +412,7 @@ async fn rejects_correction_commit_after_client_signoff_through_http() {
         .await
         .unwrap();
 
-    assert_eq!(correction_response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(correction_response.status(), StatusCode::CONFLICT);
     let error: serde_json::Value = read_json(correction_response).await;
     assert_eq!(
         error["error"],
@@ -371,4 +435,329 @@ async fn rejects_correction_commit_after_client_signoff_through_http() {
         after.branch.status,
         accounts_repo_backend::domain::BranchStatus::Frozen
     );
+}
+
+#[tokio::test]
+async fn rejects_preparer_reviewer_approval_to_prevent_self_review_through_http() {
+    let app = test_app();
+    let (_, workspace) = seeded_repo_workspace(&app).await;
+
+    let approve_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/reviewer-approval",
+                    workspace.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "actor_name": "Amjad Salleh",
+                        "note": "Preparer tries to approve their own work"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(approve_response.status(), StatusCode::FORBIDDEN);
+    let error: serde_json::Value = read_json(approve_response).await;
+    assert_eq!(
+        error["error"],
+        "authenticated user does not have the required repo role"
+    );
+
+    let review_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/review-packs/{}", workspace.review_pack.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let review_pack: ReviewPack = read_json(review_response).await;
+
+    assert_eq!(review_pack.status, ReviewStatus::InReview);
+    assert!(review_pack.approvals.is_empty());
+}
+
+#[tokio::test]
+async fn rejects_reviewer_correction_commit_to_prevent_approval_bypass_through_http() {
+    let app = test_app();
+    let (repo, before) = seeded_repo_workspace(&app).await;
+
+    let correction_response = app
+        .clone()
+        .oneshot(
+            reviewer_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/repos/{}/branches/{}/correction-commits",
+                    repo.id, before.branch.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "actor_name": "Amjad Salleh",
+                        "message": "Reviewer attempts to alter reviewed numbers",
+                        "reference": "AJ-003",
+                        "description": "Move bank charges after review",
+                        "rationale": "This would bypass preparer controls",
+                        "lines": [
+                            {"account_code": "6000", "amount": "3900.00"},
+                            {"account_code": "6400", "amount": "-3900.00"}
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(correction_response.status(), StatusCode::FORBIDDEN);
+    let error: serde_json::Value = read_json(correction_response).await;
+    assert_eq!(
+        error["error"],
+        "authenticated user does not have the required repo role"
+    );
+
+    let after_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/repos/{}", repo.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let after: RepoWorkspace = read_json(after_response).await;
+
+    assert_eq!(after.commits.len(), before.commits.len());
+    assert_eq!(after.branch.head_commit_id, before.branch.head_commit_id);
+}
+
+#[tokio::test]
+async fn rejects_reviewer_approval_while_queries_open_to_prevent_unresolved_matters_through_http() {
+    let app = test_app();
+    let (_, workspace) = seeded_repo_workspace(&app).await;
+
+    let query_response = app
+        .clone()
+        .oneshot(
+            reviewer_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/queries",
+                    workspace.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "Confirm revenue cut-off support before approval",
+                        "assigned_to": "Aina Rahman"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(query_response.status(), StatusCode::CREATED);
+    let query: ReviewQuery = read_json(query_response).await;
+    assert_eq!(query.status, QueryStatus::Open);
+
+    let blocked_approval_response = app
+        .clone()
+        .oneshot(
+            reviewer_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/reviewer-approval",
+                    workspace.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"note": "Approving despite unresolved query"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_approval_response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = read_json(blocked_approval_response).await;
+    assert_eq!(error["error"], "review pack has open queries");
+
+    let resolve_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/queries/{}/resolve",
+                    workspace.review_pack.id, query.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"note": "Revenue cut-off schedule attached and reviewed"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resolve_response.status(), StatusCode::OK);
+    let resolved_query: ReviewQuery = read_json(resolve_response).await;
+    assert_eq!(resolved_query.status, QueryStatus::Resolved);
+
+    let approval_response = app
+        .clone()
+        .oneshot(
+            reviewer_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/reviewer-approval",
+                    workspace.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"note": "Resolved and approved"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approval_response.status(), StatusCode::CREATED);
+
+    let review_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/review-packs/{}", workspace.review_pack.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let review_pack: ReviewPack = read_json(review_response).await;
+    assert_eq!(review_pack.status, ReviewStatus::ReviewerApproved);
+}
+
+#[tokio::test]
+async fn rejects_signed_export_before_client_signoff_to_prevent_unsigned_evidence_pack_through_http()
+ {
+    let app = test_app();
+    let (_, workspace) = seeded_repo_workspace(&app).await;
+
+    let export_response = app
+        .oneshot(
+            reviewer_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/signed-export",
+                    workspace.review_pack.id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(export_response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = read_json(export_response).await;
+    assert_eq!(error["error"], "review pack must be signed before export");
+}
+
+#[tokio::test]
+async fn maintains_audit_hash_chain_when_signed_pack_is_exported_through_http() {
+    let app = test_app();
+    let (repo, workspace) = seeded_repo_workspace(&app).await;
+
+    let approve_response = app
+        .clone()
+        .oneshot(
+            reviewer_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/reviewer-approval",
+                    workspace.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"note": "Reviewed"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve_response.status(), StatusCode::CREATED);
+
+    let sign_response = app
+        .clone()
+        .oneshot(
+            owner_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/client-signoff",
+                    workspace.review_pack.id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"note": "Signed"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sign_response.status(), StatusCode::CREATED);
+
+    let export_response = app
+        .clone()
+        .oneshot(
+            owner_headers(Request::builder())
+                .method("POST")
+                .uri(format!(
+                    "/api/review-packs/{}/signed-export",
+                    workspace.review_pack.id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(export_response.status(), StatusCode::OK);
+    let export_payload: serde_json::Value = read_json(export_response).await;
+    assert_eq!(export_payload["review_pack"]["status"], "signed");
+    assert_eq!(
+        export_payload["commit"]["id"],
+        workspace.review_pack.commit_id.to_string()
+    );
+
+    let audit_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/repos/{}/audit", repo.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let audit_events: Vec<AuditEvent> = read_json(audit_response).await;
+
+    assert_eq!(
+        audit_events.last().map(|event| &event.event_type),
+        Some(&AuditEventType::SignedPackExported)
+    );
+    for (index, event) in audit_events.iter().enumerate() {
+        assert_eq!(event.sequence_number, index as u64 + 1);
+        assert_eq!(event.event_hash.len(), 64);
+
+        if index == 0 {
+            assert!(event.previous_hash.is_none());
+        } else {
+            assert_eq!(
+                event.previous_hash.as_deref(),
+                Some(audit_events[index - 1].event_hash.as_str())
+            );
+        }
+    }
 }

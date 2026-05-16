@@ -13,13 +13,13 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "cargo run -p accounts-repo-backend",
-      url: "http://127.0.0.1:8080/health",
+      command: "ACCOUNTS_REPO_AUTH_DISABLED_DEV=1 ACCOUNTS_REPO_BIND_ADDR=127.0.0.1:18080 CORS_ALLOWED_ORIGIN=http://127.0.0.1:5179 cargo run -p accounts-repo-backend",
+      url: "http://127.0.0.1:18080/health",
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: "pnpm --dir frontend dev --host 127.0.0.1 --port 5179 --strictPort",
+      command: "BACKEND_URL=http://127.0.0.1:18080 VITE_DEV_AUTH_EMAIL=aina@ahadvisory.test VITE_DEV_AUTH_NAME='Aina Rahman' VITE_DEV_AUTH_ID=seed-preparer pnpm --dir frontend dev --host 127.0.0.1 --port 5179 --strictPort",
       url: "http://127.0.0.1:5179",
       reuseExistingServer: false,
       timeout: 120_000,

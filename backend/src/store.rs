@@ -7,6 +7,8 @@ use crate::domain::{
 use chrono::{NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     str::FromStr,
@@ -20,8 +22,19 @@ pub enum StoreError {
     NotFound,
     #[error("invalid import: {0}")]
     InvalidImport(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error(transparent)]
     Domain(#[from] DomainError),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthenticatedActor {
+    pub auth_user_id: String,
+    pub display_name: String,
+    pub email: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,7 +49,8 @@ pub struct RepoWorkspace {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CorrectionCommitRequest {
-    pub actor_name: String,
+    #[serde(default)]
+    pub actor_name: Option<String>,
     pub message: String,
     pub reference: String,
     pub description: String,
@@ -46,8 +60,20 @@ pub struct CorrectionCommitRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApprovalRequest {
-    pub actor_name: String,
+    #[serde(default)]
+    pub actor_name: Option<String>,
     pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewQueryRequest {
+    pub title: String,
+    pub assigned_to: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolveReviewQueryRequest {
+    pub note: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,10 +83,18 @@ pub struct WorkspaceImportRequest {
     pub jurisdiction: String,
     pub entity_type: String,
     pub owner_name: String,
+    #[serde(default)]
+    pub owner_email: String,
     pub firm_name: String,
     pub preparer_name: String,
+    #[serde(default)]
+    pub preparer_email: String,
     pub reviewer_name: String,
+    #[serde(default)]
+    pub reviewer_email: String,
     pub client_signer_name: String,
+    #[serde(default)]
+    pub client_signer_email: String,
     pub branch_label: String,
     pub period_start: NaiveDate,
     pub period_end: NaiveDate,
@@ -79,7 +113,7 @@ pub struct WorkspaceImportTrialBalanceLine {
     pub assertion: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppStore {
     users: BTreeMap<Uuid, User>,
     organizations: BTreeMap<Uuid, Organization>,
@@ -139,6 +173,7 @@ impl AppStore {
                 owner_id,
                 User {
                     id: owner_id,
+                    auth_user_id: Some("seed-owner".to_string()),
                     display_name: "Hazli Johar".to_string(),
                     email: "hazli@nusantara.test".to_string(),
                 },
@@ -147,6 +182,7 @@ impl AppStore {
                 preparer_id,
                 User {
                     id: preparer_id,
+                    auth_user_id: Some("seed-preparer".to_string()),
                     display_name: "Aina Rahman".to_string(),
                     email: "aina@ahadvisory.test".to_string(),
                 },
@@ -155,6 +191,7 @@ impl AppStore {
                 reviewer_id,
                 User {
                     id: reviewer_id,
+                    auth_user_id: Some("seed-reviewer".to_string()),
                     display_name: "Amjad Salleh".to_string(),
                     email: "amjad@ahadvisory.test".to_string(),
                 },
@@ -163,6 +200,7 @@ impl AppStore {
                 signer_id,
                 User {
                     id: signer_id,
+                    auth_user_id: Some("seed-signer".to_string()),
                     display_name: "Nur Sofia".to_string(),
                     email: "sofia@nusantara.test".to_string(),
                 },
@@ -173,21 +211,25 @@ impl AppStore {
             Collaborator {
                 user_id: owner_id,
                 display_name: "Hazli Johar".to_string(),
+                email: "hazli@nusantara.test".to_string(),
                 role: RepoRole::Owner,
             },
             Collaborator {
                 user_id: preparer_id,
                 display_name: "Aina Rahman".to_string(),
+                email: "aina@ahadvisory.test".to_string(),
                 role: RepoRole::Preparer,
             },
             Collaborator {
                 user_id: reviewer_id,
                 display_name: "Amjad Salleh".to_string(),
+                email: "amjad@ahadvisory.test".to_string(),
                 role: RepoRole::Reviewer,
             },
             Collaborator {
                 user_id: signer_id,
                 display_name: "Nur Sofia".to_string(),
+                email: "sofia@nusantara.test".to_string(),
                 role: RepoRole::ClientSigner,
             },
         ];
@@ -240,12 +282,7 @@ impl AppStore {
             title: "FY2026 Sdn Bhd Year-End Review Pack".to_string(),
             status: ReviewStatus::InReview,
             approvals: vec![],
-            open_queries: vec![ReviewQuery {
-                id: Uuid::new_v4(),
-                title: "Confirm director approval for professional fee accrual".to_string(),
-                status: crate::domain::QueryStatus::Open,
-                assigned_to: "Hazli Johar".to_string(),
-            }],
+            open_queries: vec![],
             created_by: "Aina Rahman".to_string(),
             created_at: Utc::now(),
         };
@@ -262,52 +299,73 @@ impl AppStore {
             summary: placeholder_summary,
         };
 
-        let audit_events = vec![
-            audit(
-                repo_id,
-                "Hazli Johar",
-                AuditEventType::RepoCreated,
-                "Client-owned legal entity repo created",
+        let owner_actor = AuthenticatedActor {
+            auth_user_id: "seed-owner".to_string(),
+            display_name: "Hazli Johar".to_string(),
+            email: "hazli@nusantara.test".to_string(),
+        };
+        let preparer_actor = AuthenticatedActor {
+            auth_user_id: "seed-preparer".to_string(),
+            display_name: "Aina Rahman".to_string(),
+            email: "aina@ahadvisory.test".to_string(),
+        };
+        let mut audit_events = Vec::new();
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            &owner_actor,
+            AuditEventType::RepoCreated,
+            "Client-owned legal entity repo created".to_string(),
+            None,
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            &preparer_actor,
+            AuditEventType::BranchCreated,
+            "FY2026 period branch opened".to_string(),
+            None,
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            &preparer_actor,
+            AuditEventType::DataImported,
+            "Trial balance import attached to branch evidence".to_string(),
+            Some(commit_one.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            &preparer_actor,
+            AuditEventType::CommitCreated,
+            format!(
+                "Commit {} created: {}",
+                short_hash(&commit_one.snapshot_hash),
+                commit_one.message
             ),
-            audit(
-                repo_id,
-                "Aina Rahman",
-                AuditEventType::BranchCreated,
-                "FY2026 period branch opened",
+            Some(commit_one.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            &preparer_actor,
+            AuditEventType::CommitCreated,
+            format!(
+                "Commit {} created: {}",
+                short_hash(&commit_two.snapshot_hash),
+                commit_two.message
             ),
-            audit(
-                repo_id,
-                "Aina Rahman",
-                AuditEventType::DataImported,
-                "Trial balance import attached to branch evidence",
-            ),
-            audit(
-                repo_id,
-                "Aina Rahman",
-                AuditEventType::CommitCreated,
-                format!(
-                    "Commit {} created: {}",
-                    short_hash(&commit_one.snapshot_hash),
-                    commit_one.message
-                ),
-            ),
-            audit(
-                repo_id,
-                "Aina Rahman",
-                AuditEventType::CommitCreated,
-                format!(
-                    "Commit {} created: {}",
-                    short_hash(&commit_two.snapshot_hash),
-                    commit_two.message
-                ),
-            ),
-            audit(
-                repo_id,
-                "Aina Rahman",
-                AuditEventType::ReviewPackOpened,
-                "FY2026 year-end review pack opened",
-            ),
-        ];
+            Some(commit_two.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            &preparer_actor,
+            AuditEventType::ReviewPackOpened,
+            "FY2026 year-end review pack opened".to_string(),
+            Some(commit_two.id),
+        );
 
         Self {
             users,
@@ -325,6 +383,7 @@ impl AppStore {
     pub fn import_workspace(
         &mut self,
         request: WorkspaceImportRequest,
+        actor: &AuthenticatedActor,
     ) -> Result<RepoWorkspace, StoreError> {
         validate_import_request(&request)?;
 
@@ -352,36 +411,58 @@ impl AppStore {
             },
         );
 
+        let owner_email =
+            email_or_default(&request.owner_email, &request.owner_name, "client.local");
+        let preparer_email = if request.preparer_email.trim().is_empty() {
+            actor.email.clone()
+        } else {
+            request.preparer_email.trim().to_ascii_lowercase()
+        };
+        let reviewer_email = email_or_default(
+            &request.reviewer_email,
+            &request.reviewer_name,
+            "firm.local",
+        );
+        let signer_email = email_or_default(
+            &request.client_signer_email,
+            &request.client_signer_name,
+            "client.local",
+        );
+
         self.users.insert(
             owner_id,
             User {
                 id: owner_id,
+                auth_user_id: actor_id_for_email(actor, &owner_email),
                 display_name: request.owner_name.clone(),
-                email: user_email(&request.owner_name, "client.local"),
+                email: owner_email.clone(),
             },
         );
         self.users.insert(
             preparer_id,
             User {
                 id: preparer_id,
-                display_name: request.preparer_name.clone(),
-                email: user_email(&request.preparer_name, "firm.local"),
+                auth_user_id: Some(actor.auth_user_id.clone()),
+                display_name: actor.display_name.clone(),
+                email: preparer_email.clone(),
             },
         );
         self.users.insert(
             reviewer_id,
             User {
                 id: reviewer_id,
+                auth_user_id: actor_id_for_email(actor, &reviewer_email),
                 display_name: request.reviewer_name.clone(),
-                email: user_email(&request.reviewer_name, "firm.local"),
+                email: reviewer_email.clone(),
             },
         );
         self.users.insert(
             signer_id,
             User {
                 id: signer_id,
+                auth_user_id: actor_id_for_email(actor, &signer_email),
                 display_name: request.client_signer_name.clone(),
-                email: user_email(&request.client_signer_name, "client.local"),
+                email: signer_email.clone(),
             },
         );
 
@@ -389,21 +470,25 @@ impl AppStore {
             Collaborator {
                 user_id: owner_id,
                 display_name: request.owner_name.clone(),
+                email: owner_email,
                 role: RepoRole::Owner,
             },
             Collaborator {
                 user_id: preparer_id,
-                display_name: request.preparer_name.clone(),
+                display_name: actor.display_name.clone(),
+                email: preparer_email,
                 role: RepoRole::Preparer,
             },
             Collaborator {
                 user_id: reviewer_id,
                 display_name: request.reviewer_name.clone(),
+                email: reviewer_email,
                 role: RepoRole::Reviewer,
             },
             Collaborator {
                 user_id: signer_id,
                 display_name: request.client_signer_name.clone(),
+                email: signer_email,
                 role: RepoRole::ClientSigner,
             },
         ];
@@ -415,7 +500,7 @@ impl AppStore {
             None,
             baseline_snapshot,
             format!("Opened {} period branch", request.branch_label),
-            request.preparer_name.clone(),
+            actor.display_name.clone(),
         );
 
         let trial_balance = request
@@ -449,7 +534,7 @@ impl AppStore {
                 "Imported trial balance from {}",
                 request.source_label.trim()
             ),
-            request.preparer_name.clone(),
+            actor.display_name.clone(),
         );
 
         let branch = PeriodBranch {
@@ -471,7 +556,7 @@ impl AppStore {
             status: ReviewStatus::InReview,
             approvals: vec![],
             open_queries: vec![],
-            created_by: request.preparer_name.clone(),
+            created_by: actor.display_name.clone(),
             created_at: Utc::now(),
         };
         let repo = LegalEntityRepo {
@@ -484,55 +569,66 @@ impl AppStore {
             collaborators,
             summary: repo_summary(&branch, &import_commit, review_pack.status.clone()),
         };
-        let audit_events = vec![
-            audit(
-                repo_id,
-                request.owner_name.clone(),
-                AuditEventType::RepoCreated,
-                "Client-owned legal entity repo created from imported source data",
+        let mut audit_events = Vec::new();
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            actor,
+            AuditEventType::RepoCreated,
+            "Client-owned legal entity repo created from imported source data".to_string(),
+            None,
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            actor,
+            AuditEventType::BranchCreated,
+            format!("{} period branch opened", request.branch_label),
+            Some(baseline_commit.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            actor,
+            AuditEventType::DataImported,
+            format!(
+                "Trial balance imported from {}",
+                request.source_label.trim()
             ),
-            audit(
-                repo_id,
-                request.preparer_name.clone(),
-                AuditEventType::BranchCreated,
-                format!("{} period branch opened", request.branch_label),
+            Some(import_commit.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            actor,
+            AuditEventType::CommitCreated,
+            format!(
+                "Commit {} created: {}",
+                short_hash(&baseline_commit.snapshot_hash),
+                baseline_commit.message
             ),
-            audit(
-                repo_id,
-                request.preparer_name.clone(),
-                AuditEventType::DataImported,
-                format!(
-                    "Trial balance imported from {}",
-                    request.source_label.trim()
-                ),
+            Some(baseline_commit.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            actor,
+            AuditEventType::CommitCreated,
+            format!(
+                "Commit {} created: {}",
+                short_hash(&import_commit.snapshot_hash),
+                import_commit.message
             ),
-            audit(
-                repo_id,
-                request.preparer_name.clone(),
-                AuditEventType::CommitCreated,
-                format!(
-                    "Commit {} created: {}",
-                    short_hash(&baseline_commit.snapshot_hash),
-                    baseline_commit.message
-                ),
-            ),
-            audit(
-                repo_id,
-                request.preparer_name.clone(),
-                AuditEventType::CommitCreated,
-                format!(
-                    "Commit {} created: {}",
-                    short_hash(&import_commit.snapshot_hash),
-                    import_commit.message
-                ),
-            ),
-            audit(
-                repo_id,
-                request.preparer_name,
-                AuditEventType::ReviewPackOpened,
-                "Year-end review pack opened from imported trial balance",
-            ),
-        ];
+            Some(import_commit.id),
+        );
+        push_audit_event(
+            &mut audit_events,
+            repo_id,
+            actor,
+            AuditEventType::ReviewPackOpened,
+            "Year-end review pack opened from imported trial balance".to_string(),
+            Some(import_commit.id),
+        );
 
         self.repos.insert(repo_id, repo);
         self.branches.insert(branch_id, branch);
@@ -551,6 +647,36 @@ impl AppStore {
             .keys()
             .map(|repo_id| self.repo_view(*repo_id))
             .collect()
+    }
+
+    pub fn list_repos_for_actor(
+        &self,
+        actor: &AuthenticatedActor,
+    ) -> Result<Vec<LegalEntityRepo>, StoreError> {
+        self.repos
+            .iter()
+            .filter(|(_, repo)| actor_collaborates(repo, actor))
+            .map(|(repo_id, _)| self.repo_view(*repo_id))
+            .collect()
+    }
+
+    pub fn repo_workspace_for_actor(
+        &self,
+        repo_id: Uuid,
+        actor: &AuthenticatedActor,
+    ) -> Result<RepoWorkspace, StoreError> {
+        self.require_repo_role(
+            repo_id,
+            actor,
+            &[
+                RepoRole::Owner,
+                RepoRole::Preparer,
+                RepoRole::Reviewer,
+                RepoRole::ClientSigner,
+                RepoRole::Observer,
+            ],
+        )?;
+        self.repo_workspace(repo_id)
     }
 
     pub fn repo_workspace(&self, repo_id: Uuid) -> Result<RepoWorkspace, StoreError> {
@@ -606,26 +732,55 @@ impl AppStore {
             .ok_or(StoreError::NotFound)
     }
 
+    pub fn review_pack_for_actor(
+        &self,
+        review_pack_id: Uuid,
+        actor: &AuthenticatedActor,
+    ) -> Result<ReviewPack, StoreError> {
+        let review_pack = self.review_pack(review_pack_id)?;
+        self.require_repo_role(
+            review_pack.legal_entity_id,
+            actor,
+            &[
+                RepoRole::Owner,
+                RepoRole::Preparer,
+                RepoRole::Reviewer,
+                RepoRole::ClientSigner,
+                RepoRole::Observer,
+            ],
+        )?;
+        Ok(review_pack)
+    }
+
     pub fn approve_reviewer(
         &mut self,
         review_pack_id: Uuid,
         request: ApprovalRequest,
+        actor: &AuthenticatedActor,
     ) -> Result<Approval, StoreError> {
+        let legal_entity_id = self
+            .review_packs
+            .get(&review_pack_id)
+            .map(|pack| pack.legal_entity_id)
+            .ok_or(StoreError::NotFound)?;
+        self.require_repo_role(legal_entity_id, actor, &[RepoRole::Reviewer])?;
+
         let (approval, legal_entity_id) = {
             let review_pack = self
                 .review_packs
                 .get_mut(&review_pack_id)
                 .ok_or(StoreError::NotFound)?;
             let approval =
-                review_pack.approve_reviewer(request.actor_name.clone(), request.note)?;
+                review_pack.approve_reviewer(actor.display_name.clone(), request.note)?;
             (approval, review_pack.legal_entity_id)
         };
 
         self.push_audit(
             legal_entity_id,
-            request.actor_name,
+            actor,
             AuditEventType::ReviewerApproved,
             "Reviewer approved the frozen review pack snapshot".to_string(),
+            None,
         );
 
         Ok(approval)
@@ -635,13 +790,25 @@ impl AppStore {
         &mut self,
         review_pack_id: Uuid,
         request: ApprovalRequest,
+        actor: &AuthenticatedActor,
     ) -> Result<Approval, StoreError> {
+        let legal_entity_id = self
+            .review_packs
+            .get(&review_pack_id)
+            .map(|pack| pack.legal_entity_id)
+            .ok_or(StoreError::NotFound)?;
+        self.require_repo_role(
+            legal_entity_id,
+            actor,
+            &[RepoRole::ClientSigner, RepoRole::Owner],
+        )?;
+
         let (approval, legal_entity_id, branch_id) = {
             let review_pack = self
                 .review_packs
                 .get_mut(&review_pack_id)
                 .ok_or(StoreError::NotFound)?;
-            let approval = review_pack.sign_client(request.actor_name.clone(), request.note)?;
+            let approval = review_pack.sign_client(actor.display_name.clone(), request.note)?;
             (
                 approval,
                 review_pack.legal_entity_id,
@@ -655,9 +822,10 @@ impl AppStore {
 
         self.push_audit(
             legal_entity_id,
-            request.actor_name,
+            actor,
             AuditEventType::ClientSigned,
             "Client director signed the review pack and froze the period branch".to_string(),
+            None,
         );
 
         Ok(approval)
@@ -668,6 +836,7 @@ impl AppStore {
         repo_id: Uuid,
         branch_id: Uuid,
         request: CorrectionCommitRequest,
+        actor: &AuthenticatedActor,
     ) -> Result<Commit, StoreError> {
         let branch = self
             .branches
@@ -680,6 +849,7 @@ impl AppStore {
         if branch.status == BranchStatus::Frozen {
             return Err(StoreError::Domain(DomainError::FrozenBranch));
         }
+        self.require_repo_role(repo_id, actor, &[RepoRole::Preparer, RepoRole::Owner])?;
 
         let review_pack_id = *self
             .review_pack_by_repo
@@ -704,13 +874,25 @@ impl AppStore {
             .cloned()
             .ok_or(StoreError::NotFound)?;
 
+        validate_adjustment_accounts(&head_commit.snapshot, &request.lines)?;
+        if head_commit
+            .snapshot
+            .adjustments
+            .iter()
+            .any(|adjustment| adjustment.reference == request.reference)
+        {
+            return Err(StoreError::Domain(
+                DomainError::DuplicateAdjustmentReference(request.reference.clone()),
+            ));
+        }
+
         let correction = Adjustment {
             id: Uuid::new_v4(),
             reference: request.reference,
             description: request.description,
             rationale: request.rationale,
             lines: request.lines,
-            created_by: request.actor_name.clone(),
+            created_by: actor.display_name.clone(),
             created_at: Utc::now(),
         };
         correction.validate()?;
@@ -729,7 +911,7 @@ impl AppStore {
             Some(head_commit.snapshot_hash.clone()),
             snapshot,
             request.message,
-            request.actor_name.clone(),
+            actor.display_name.clone(),
         );
 
         self.commits_by_branch
@@ -748,15 +930,187 @@ impl AppStore {
 
         self.push_audit(
             repo_id,
-            request.actor_name,
+            actor,
             AuditEventType::CorrectionCommitted,
             format!(
                 "Correction commit {} appended; previous commits preserved",
                 short_hash(&commit.snapshot_hash)
             ),
+            Some(commit.id),
         );
 
         Ok(commit)
+    }
+
+    pub fn open_review_query(
+        &mut self,
+        review_pack_id: Uuid,
+        request: ReviewQueryRequest,
+        actor: &AuthenticatedActor,
+    ) -> Result<ReviewQuery, StoreError> {
+        if request.title.trim().is_empty() {
+            return Err(StoreError::InvalidImport(
+                "query title is required".to_string(),
+            ));
+        }
+
+        let legal_entity_id = self
+            .review_packs
+            .get(&review_pack_id)
+            .map(|pack| pack.legal_entity_id)
+            .ok_or(StoreError::NotFound)?;
+        self.require_repo_role(
+            legal_entity_id,
+            actor,
+            &[RepoRole::Preparer, RepoRole::Reviewer, RepoRole::Owner],
+        )?;
+
+        let query = ReviewQuery {
+            id: Uuid::new_v4(),
+            title: request.title.trim().to_string(),
+            status: crate::domain::QueryStatus::Open,
+            assigned_to: request.assigned_to.trim().to_string(),
+            resolved_note: None,
+            resolved_by: None,
+            resolved_at: None,
+        };
+
+        self.review_packs
+            .get_mut(&review_pack_id)
+            .ok_or(StoreError::NotFound)?
+            .open_queries
+            .push(query.clone());
+
+        self.push_audit(
+            legal_entity_id,
+            actor,
+            AuditEventType::ReviewQueryOpened,
+            format!("Review query opened: {}", query.title),
+            None,
+        );
+
+        Ok(query)
+    }
+
+    pub fn resolve_review_query(
+        &mut self,
+        review_pack_id: Uuid,
+        query_id: Uuid,
+        request: ResolveReviewQueryRequest,
+        actor: &AuthenticatedActor,
+    ) -> Result<ReviewQuery, StoreError> {
+        let legal_entity_id = self
+            .review_packs
+            .get(&review_pack_id)
+            .map(|pack| pack.legal_entity_id)
+            .ok_or(StoreError::NotFound)?;
+        self.require_repo_role(
+            legal_entity_id,
+            actor,
+            &[
+                RepoRole::Preparer,
+                RepoRole::Reviewer,
+                RepoRole::ClientSigner,
+                RepoRole::Owner,
+            ],
+        )?;
+
+        let query = {
+            let review_pack = self
+                .review_packs
+                .get_mut(&review_pack_id)
+                .ok_or(StoreError::NotFound)?;
+            let query = review_pack
+                .open_queries
+                .iter_mut()
+                .find(|query| query.id == query_id)
+                .ok_or(StoreError::NotFound)?;
+            query.status = crate::domain::QueryStatus::Resolved;
+            query.resolved_note = Some(request.note.trim().to_string());
+            query.resolved_by = Some(actor.display_name.clone());
+            query.resolved_at = Some(Utc::now());
+            query.clone()
+        };
+
+        self.push_audit(
+            legal_entity_id,
+            actor,
+            AuditEventType::ReviewQueryResolved,
+            format!("Review query resolved: {}", query.title),
+            None,
+        );
+
+        Ok(query)
+    }
+
+    pub fn signed_pack_export(
+        &mut self,
+        review_pack_id: Uuid,
+        actor: &AuthenticatedActor,
+    ) -> Result<Value, StoreError> {
+        let review_pack = self
+            .review_packs
+            .get(&review_pack_id)
+            .cloned()
+            .ok_or(StoreError::NotFound)?;
+        if review_pack.status != ReviewStatus::Signed {
+            return Err(StoreError::Conflict(
+                "review pack must be signed before export".to_string(),
+            ));
+        }
+        self.require_repo_role(
+            review_pack.legal_entity_id,
+            actor,
+            &[RepoRole::Owner, RepoRole::ClientSigner, RepoRole::Reviewer],
+        )?;
+
+        let repo = self.repo_view(review_pack.legal_entity_id)?;
+        let branch = self
+            .branches
+            .get(&review_pack.period_branch_id)
+            .cloned()
+            .ok_or(StoreError::NotFound)?;
+        let commit = self
+            .commits_by_branch
+            .get(&review_pack.period_branch_id)
+            .and_then(|commits| {
+                commits
+                    .iter()
+                    .find(|commit| commit.id == review_pack.commit_id)
+            })
+            .cloned()
+            .ok_or(StoreError::NotFound)?;
+        let audit_events = self
+            .audit_events_by_repo
+            .get(&review_pack.legal_entity_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let legal_entity_id = review_pack.legal_entity_id;
+        let signed_commit_id = review_pack.commit_id;
+        let payload = json!({
+            "exported_at": Utc::now(),
+            "exported_by": {
+                "name": actor.display_name,
+                "email": actor.email,
+                "auth_user_id": actor.auth_user_id,
+            },
+            "repo": repo,
+            "branch": branch,
+            "review_pack": review_pack,
+            "commit": commit,
+            "audit_events": audit_events,
+        });
+
+        self.push_audit(
+            legal_entity_id,
+            actor,
+            AuditEventType::SignedPackExported,
+            "Signed evidence pack exported".to_string(),
+            Some(signed_commit_id),
+        );
+
+        Ok(payload)
     }
 
     pub fn audit_events(&self, repo_id: Uuid) -> Result<Vec<AuditEvent>, StoreError> {
@@ -768,6 +1122,25 @@ impl AppStore {
             .get(&repo_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    pub fn audit_events_for_actor(
+        &self,
+        repo_id: Uuid,
+        actor: &AuthenticatedActor,
+    ) -> Result<Vec<AuditEvent>, StoreError> {
+        self.require_repo_role(
+            repo_id,
+            actor,
+            &[
+                RepoRole::Owner,
+                RepoRole::Preparer,
+                RepoRole::Reviewer,
+                RepoRole::ClientSigner,
+                RepoRole::Observer,
+            ],
+        )?;
+        self.audit_events(repo_id)
     }
 
     pub fn organization_count(&self) -> usize {
@@ -815,14 +1188,45 @@ impl AppStore {
     fn push_audit(
         &mut self,
         legal_entity_id: Uuid,
-        actor_name: String,
+        actor: &AuthenticatedActor,
         event_type: AuditEventType,
         message: String,
+        related_commit_id: Option<Uuid>,
     ) {
-        self.audit_events_by_repo
+        let events = self
+            .audit_events_by_repo
             .entry(legal_entity_id)
-            .or_default()
-            .push(audit(legal_entity_id, actor_name, event_type, message));
+            .or_default();
+        push_audit_event(
+            events,
+            legal_entity_id,
+            actor,
+            event_type,
+            message,
+            related_commit_id,
+        );
+    }
+
+    fn require_repo_role(
+        &self,
+        repo_id: Uuid,
+        actor: &AuthenticatedActor,
+        allowed_roles: &[RepoRole],
+    ) -> Result<(), StoreError> {
+        let repo = self.repos.get(&repo_id).ok_or(StoreError::NotFound)?;
+        let actor_email = actor.email.to_ascii_lowercase();
+        let allowed = repo.collaborators.iter().any(|collaborator| {
+            collaborator.email.eq_ignore_ascii_case(&actor_email)
+                && allowed_roles.contains(&collaborator.role)
+        });
+
+        if allowed {
+            Ok(())
+        } else {
+            Err(StoreError::Forbidden(
+                "authenticated user does not have the required repo role".to_string(),
+            ))
+        }
     }
 }
 
@@ -908,21 +1312,129 @@ fn user_email(name: &str, domain: &str) -> String {
     format!("{}@{}", local, domain)
 }
 
-fn audit(
+fn email_or_default(email: &str, name: &str, domain: &str) -> String {
+    if email.trim().is_empty() {
+        user_email(name, domain)
+    } else {
+        email.trim().to_ascii_lowercase()
+    }
+}
+
+fn actor_id_for_email(actor: &AuthenticatedActor, email: &str) -> Option<String> {
+    actor
+        .email
+        .eq_ignore_ascii_case(email)
+        .then(|| actor.auth_user_id.clone())
+}
+
+fn validate_adjustment_accounts(
+    snapshot: &FinancialSnapshot,
+    lines: &[AdjustmentLine],
+) -> Result<(), DomainError> {
+    let account_codes = snapshot
+        .trial_balance
+        .iter()
+        .map(|line| line.account_code.as_str())
+        .collect::<BTreeSet<_>>();
+    let mapped_codes = snapshot
+        .mappings
+        .iter()
+        .map(|mapping| mapping.account_code.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for line in lines {
+        if !account_codes.contains(line.account_code.as_str()) {
+            return Err(DomainError::UnknownAdjustmentAccount(
+                line.account_code.clone(),
+            ));
+        }
+        if !mapped_codes.contains(line.account_code.as_str()) {
+            return Err(DomainError::UnmappedAdjustmentAccount(
+                line.account_code.clone(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn actor_collaborates(repo: &LegalEntityRepo, actor: &AuthenticatedActor) -> bool {
+    repo.collaborators
+        .iter()
+        .any(|collaborator| collaborator.email.eq_ignore_ascii_case(&actor.email))
+}
+
+fn push_audit_event(
+    events: &mut Vec<AuditEvent>,
     legal_entity_id: Uuid,
-    actor_name: impl Into<String>,
+    actor: &AuthenticatedActor,
     event_type: AuditEventType,
-    message: impl Into<String>,
-) -> AuditEvent {
+    message: String,
+    related_commit_id: Option<Uuid>,
+) {
+    let sequence_number = events.len() as u64 + 1;
+    let previous_hash = events.last().map(|event| event.event_hash.clone());
+    let occurred_at = Utc::now();
+    let event_hash = audit_hash(
+        legal_entity_id,
+        sequence_number,
+        previous_hash.as_deref(),
+        actor,
+        &event_type,
+        &message,
+        occurred_at.to_rfc3339().as_str(),
+        related_commit_id,
+    );
+
     AuditEvent {
         id: Uuid::new_v4(),
         legal_entity_id,
-        actor_name: actor_name.into(),
+        sequence_number,
+        actor_user_id: Some(actor.auth_user_id.clone()),
+        actor_name: actor.display_name.clone(),
+        actor_email: actor.email.clone(),
         event_type,
-        message: message.into(),
-        occurred_at: Utc::now(),
+        message,
+        occurred_at,
+        related_commit_id,
+        previous_hash,
+        event_hash,
+    }
+    .pipe(|event| events.push(event));
+}
+
+fn audit_hash(
+    legal_entity_id: Uuid,
+    sequence_number: u64,
+    previous_hash: Option<&str>,
+    actor: &AuthenticatedActor,
+    event_type: &AuditEventType,
+    message: &str,
+    occurred_at: &str,
+    related_commit_id: Option<Uuid>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(legal_entity_id.as_bytes());
+    hasher.update(sequence_number.to_be_bytes());
+    hasher.update(previous_hash.unwrap_or_default().as_bytes());
+    hasher.update(actor.auth_user_id.as_bytes());
+    hasher.update(actor.email.as_bytes());
+    hasher.update(format!("{:?}", event_type).as_bytes());
+    hasher.update(message.as_bytes());
+    hasher.update(occurred_at.as_bytes());
+    if let Some(commit_id) = related_commit_id {
+        hasher.update(commit_id.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
     }
 }
+
+impl<T> Pipe for T {}
 
 fn dec(value: &str) -> Decimal {
     Decimal::from_str(value).expect("seed decimal must be valid")
@@ -1077,10 +1589,14 @@ mod tests {
             jurisdiction: "Malaysia".to_string(),
             entity_type: "Sdn Bhd".to_string(),
             owner_name: "Hazli Johar".to_string(),
+            owner_email: "hazli@nusantara.test".to_string(),
             firm_name: "Amjad & Hazli Advisory".to_string(),
             preparer_name: "Aina Rahman".to_string(),
+            preparer_email: "aina@ahadvisory.test".to_string(),
             reviewer_name: "Amjad Salleh".to_string(),
+            reviewer_email: "amjad@ahadvisory.test".to_string(),
             client_signer_name: "Hazli Johar".to_string(),
+            client_signer_email: "hazli@nusantara.test".to_string(),
             branch_label: "FY2026 Year-End".to_string(),
             period_start: NaiveDate::from_ymd_opt(2025, 7, 1).unwrap(),
             period_end: NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
@@ -1106,11 +1622,37 @@ mod tests {
         }
     }
 
+    fn preparer_actor() -> AuthenticatedActor {
+        AuthenticatedActor {
+            auth_user_id: "seed-preparer".to_string(),
+            display_name: "Aina Rahman".to_string(),
+            email: "aina@ahadvisory.test".to_string(),
+        }
+    }
+
+    fn reviewer_actor() -> AuthenticatedActor {
+        AuthenticatedActor {
+            auth_user_id: "seed-reviewer".to_string(),
+            display_name: "Amjad Salleh".to_string(),
+            email: "amjad@ahadvisory.test".to_string(),
+        }
+    }
+
+    fn owner_actor() -> AuthenticatedActor {
+        AuthenticatedActor {
+            auth_user_id: "seed-owner".to_string(),
+            display_name: "Hazli Johar".to_string(),
+            email: "hazli@nusantara.test".to_string(),
+        }
+    }
+
     #[test]
     fn imports_real_trial_balance_to_prevent_demo_workspace_confusion() {
         let mut store = AppStore::empty();
 
-        let workspace = store.import_workspace(import_request()).unwrap();
+        let workspace = store
+            .import_workspace(import_request(), &preparer_actor())
+            .unwrap();
 
         assert_eq!(workspace.repo.name, "Real Components Sdn Bhd");
         assert_eq!(workspace.commits.len(), 2);
@@ -1127,7 +1669,7 @@ mod tests {
         request.trial_balance[0].amount = dec("999.99");
         let mut store = AppStore::empty();
 
-        let result = store.import_workspace(request);
+        let result = store.import_workspace(request, &preparer_actor());
 
         assert!(matches!(result, Err(StoreError::InvalidImport(_))));
         assert!(store.list_repos().unwrap().is_empty());
@@ -1146,7 +1688,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let correction = CorrectionCommitRequest {
-            actor_name: "Aina Rahman".to_string(),
+            actor_name: Some("Aina Rahman".to_string()),
             message: "Append correction for bank charge reclass".to_string(),
             reference: "AJ-003".to_string(),
             description: "Reclass bank charges to administrative expenses".to_string(),
@@ -1164,7 +1706,7 @@ mod tests {
         };
 
         let new_commit = store
-            .commit_correction(repo_id, branch_id, correction)
+            .commit_correction(repo_id, branch_id, correction, &preparer_actor())
             .unwrap();
         let after_workspace = store.repo_workspace(repo_id).unwrap();
 
@@ -1192,9 +1734,10 @@ mod tests {
         let result = store.sign_client(
             review_pack_id,
             ApprovalRequest {
-                actor_name: "Hazli Johar".to_string(),
+                actor_name: Some("Hazli Johar".to_string()),
                 note: Some("Approved".to_string()),
             },
+            &owner_actor(),
         );
 
         assert!(matches!(
@@ -1214,9 +1757,10 @@ mod tests {
             .approve_reviewer(
                 review_pack_id,
                 ApprovalRequest {
-                    actor_name: "Amjad Salleh".to_string(),
+                    actor_name: Some("Amjad Salleh".to_string()),
                     note: Some("Reviewed".to_string()),
                 },
+                &reviewer_actor(),
             )
             .unwrap();
 
@@ -1225,7 +1769,7 @@ mod tests {
                 repo_id,
                 branch_id,
                 CorrectionCommitRequest {
-                    actor_name: "Aina Rahman".to_string(),
+                    actor_name: Some("Aina Rahman".to_string()),
                     message: "Append correction after reviewer note".to_string(),
                     reference: "AJ-003".to_string(),
                     description: "Reclass bank charges to administrative expenses".to_string(),
@@ -1241,6 +1785,7 @@ mod tests {
                         },
                     ],
                 },
+                &preparer_actor(),
             )
             .unwrap();
         let workspace = store.repo_workspace(repo_id).unwrap();
@@ -1261,18 +1806,20 @@ mod tests {
             .approve_reviewer(
                 review_pack_id,
                 ApprovalRequest {
-                    actor_name: "Amjad Salleh".to_string(),
+                    actor_name: Some("Amjad Salleh".to_string()),
                     note: Some("Reviewed".to_string()),
                 },
+                &reviewer_actor(),
             )
             .unwrap();
         store
             .sign_client(
                 review_pack_id,
                 ApprovalRequest {
-                    actor_name: "Hazli Johar".to_string(),
+                    actor_name: Some("Hazli Johar".to_string()),
                     note: Some("Signed".to_string()),
                 },
+                &owner_actor(),
             )
             .unwrap();
         let before = store.repo_workspace(repo_id).unwrap();
@@ -1281,7 +1828,7 @@ mod tests {
             repo_id,
             branch_id,
             CorrectionCommitRequest {
-                actor_name: "Aina Rahman".to_string(),
+                actor_name: Some("Aina Rahman".to_string()),
                 message: "Attempt correction after sign-off".to_string(),
                 reference: "AJ-003".to_string(),
                 description: "Reclass bank charges to administrative expenses".to_string(),
@@ -1297,6 +1844,7 @@ mod tests {
                     },
                 ],
             },
+            &preparer_actor(),
         );
         let after = store.repo_workspace(repo_id).unwrap();
 

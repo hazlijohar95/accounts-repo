@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "better-auth": "latest",
     "vite": "latest",
     "typescript": "latest",
     "react": "latest",

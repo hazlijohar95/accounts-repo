@@ -1,22 +1,22 @@
 :root {
-  color-scheme: dark;
-  --bg: oklch(0.075 0.008 275);
-  --surface: oklch(0.12 0.01 275);
-  --surface-muted: oklch(0.16 0.012 275);
-  --surface-soft: oklch(0.19 0.012 275);
-  --fg: oklch(0.96 0.004 275);
-  --muted: oklch(0.68 0.012 275);
-  --faint: oklch(0.5 0.012 275);
-  --border: oklch(0.25 0.014 275);
-  --border-soft: oklch(0.21 0.012 275);
-  --accent: oklch(0.74 0.15 78);
-  --accent-soft: oklch(0.22 0.05 78);
-  --green: oklch(0.7 0.16 150);
-  --green-soft: oklch(0.19 0.055 150);
-  --blue: oklch(0.73 0.12 245);
-  --blue-soft: oklch(0.2 0.045 245);
-  --red: oklch(0.7 0.16 32);
-  --red-soft: oklch(0.2 0.055 32);
+  color-scheme: light;
+  --bg: oklch(0.982 0.006 88);
+  --surface: oklch(0.955 0.008 88);
+  --surface-muted: oklch(0.925 0.012 88);
+  --surface-soft: oklch(0.89 0.015 88);
+  --fg: oklch(0.22 0.018 88);
+  --muted: oklch(0.46 0.022 88);
+  --faint: oklch(0.58 0.018 88);
+  --border: oklch(0.76 0.018 88);
+  --border-soft: oklch(0.84 0.012 88);
+  --accent: oklch(0.48 0.12 78);
+  --accent-soft: oklch(0.92 0.05 78);
+  --green: oklch(0.43 0.12 150);
+  --green-soft: oklch(0.91 0.045 150);
+  --blue: oklch(0.45 0.1 245);
+  --blue-soft: oklch(0.91 0.04 245);
+  --red: oklch(0.49 0.14 32);
+  --red-soft: oklch(0.93 0.05 32);
   --space-2xs: 4px;
   --space-xs: 8px;
   --space-sm: 12px;
@@ -26,6 +26,7 @@
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --shadow-focus: 0 0 0 4px color-mix(in oklch, var(--accent) 18%, transparent);
   --sans: Avenir, "Avenir Next", "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
@@ -168,13 +169,17 @@ code,
   color: var(--fg);
   text-align: left;
   background: transparent;
-  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease;
 }
 
 .repo-button:hover:not(:disabled),
 .repo-button--active {
   border-color: var(--border);
   background: var(--surface-muted);
+}
+
+.repo-button:hover:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 .repo-button span {
@@ -398,6 +403,7 @@ code,
 .tab-panel {
   min-width: 0;
   padding: var(--space-md) var(--space-lg) var(--space-lg);
+  animation: panel-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .review-layout {
@@ -506,11 +512,12 @@ code,
 
 .primary-button,
 .secondary-button {
+  min-height: 44px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-size: 0.78rem;
   font-weight: 800;
-  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 
 .primary-button {
@@ -528,10 +535,23 @@ code,
 }
 
 .primary-button:hover:not(:disabled),
-.secondary-button:hover:not(:disabled) {
+.primary-button:active:not(:disabled) {
+  border-color: var(--fg);
+  background: color-mix(in oklch, var(--fg) 88%, var(--accent));
+  color: var(--bg);
+}
+
+.secondary-button:hover:not(:disabled),
+.secondary-button:active:not(:disabled) {
   border-color: var(--fg);
   background: var(--surface-soft);
   color: var(--fg);
+}
+
+.primary-button:hover:not(:disabled),
+.secondary-button:hover:not(:disabled) {
+  box-shadow: var(--shadow-focus);
+  transform: translateY(-1px);
 }
 
 .import-panel,
@@ -580,6 +600,7 @@ textarea {
   border-radius: var(--radius-md);
   color: var(--fg);
   background: var(--bg);
+  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
 }
 
 input {
@@ -601,6 +622,7 @@ input:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: var(--shadow-focus);
 }
 
 .diff-headline,
@@ -629,6 +651,8 @@ textarea:focus-visible {
   overflow: auto;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
+  -webkit-overflow-scrolling: touch;
+  box-shadow: inset -18px 0 18px -22px var(--muted);
 }
 
 .table-wrap--compact {
@@ -662,8 +686,7 @@ th {
   background: var(--surface-muted);
 }
 
-td:nth-child(n + 2),
-th:nth-child(n + 2) {
+.numeric {
   text-align: right;
 }
 
@@ -707,19 +730,73 @@ tr:last-child td {
   background: var(--surface-muted);
 }
 
-.query-box summary {
+.query-composer {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.query-composer__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+}
+
+.review-card .query-composer__row {
+  grid-template-columns: 1fr;
+}
+
+.query-box__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.query-box__head strong {
   color: var(--fg);
   font-size: 0.78rem;
   font-weight: 800;
-  cursor: pointer;
+}
+
+.query-box__head span,
+.query-row small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.62rem;
 }
 
 .query-box p,
 .quiet-note,
-.action-note {
+.action-note,
+.balance-note {
   margin: var(--space-xs) 0 0;
   font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.query-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
+}
+
+.table-hint {
+  display: none;
+  margin: calc(-1 * var(--space-xs)) 0 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+}
+
+.balance-note {
+  color: var(--red);
+  font-weight: 800;
+}
+
+.balance-note--ok {
+  color: var(--green);
 }
 
 .commit-row {
@@ -802,6 +879,13 @@ tr:last-child td {
   text-align: left;
 }
 
+.empty-state--auth {
+  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 420px);
+  place-items: stretch;
+  align-content: center;
+  text-align: left;
+}
+
 .import-intro {
   display: grid;
   align-content: center;
@@ -824,6 +908,18 @@ tr:last-child td {
   }
 }
 
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 1080px) {
   .app-shell,
   .review-layout,
@@ -833,9 +929,14 @@ tr:last-child td {
 
   .repo-sidebar {
     position: relative;
+    order: 2;
     height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--border-soft);
+  }
+
+  .repo-page {
+    order: 1;
   }
 
   .repo-list {
@@ -848,6 +949,7 @@ tr:last-child td {
 
   .review-card {
     position: static;
+    order: -1;
   }
 }
 
@@ -889,6 +991,16 @@ tr:last-child td {
   .toast {
     margin-right: var(--space-md);
     margin-left: var(--space-md);
+  }
+
+  .query-composer__row,
+  .query-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .table-hint {
+    display: block;
   }
 }
 

@@ -6,18 +6,27 @@ import type {
   ImportWorkspacePayload,
   LegalEntityRepo,
   RepoWorkspace,
+  ResolveReviewQueryPayload,
   ReviewPack,
+  ReviewQuery,
+  ReviewQueryPayload,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8080";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
+  if (import.meta.env.VITE_DEV_AUTH_EMAIL) {
+    headers.set("x-dev-user-id", import.meta.env.VITE_DEV_AUTH_ID ?? import.meta.env.VITE_DEV_AUTH_EMAIL);
+    headers.set("x-dev-user-name", import.meta.env.VITE_DEV_AUTH_NAME ?? import.meta.env.VITE_DEV_AUTH_EMAIL);
+    headers.set("x-dev-user-email", import.meta.env.VITE_DEV_AUTH_EMAIL);
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
     ...init,
+    credentials: "include",
+    headers,
   });
 
   if (!response.ok) {
@@ -60,6 +69,30 @@ export function signClient(reviewPackId: string, payload: ApprovalPayload): Prom
   return requestJson<Approval>(`/api/review-packs/${reviewPackId}/client-signoff`, {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function openReviewQuery(reviewPackId: string, payload: ReviewQueryPayload): Promise<ReviewQuery> {
+  return requestJson<ReviewQuery>(`/api/review-packs/${reviewPackId}/queries`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resolveReviewQuery(
+  reviewPackId: string,
+  queryId: string,
+  payload: ResolveReviewQueryPayload,
+): Promise<ReviewQuery> {
+  return requestJson<ReviewQuery>(`/api/review-packs/${reviewPackId}/queries/${queryId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function exportSignedPack(reviewPackId: string): Promise<unknown> {
+  return requestJson<unknown>(`/api/review-packs/${reviewPackId}/signed-export`, {
+    method: "POST",
   });
 }
 

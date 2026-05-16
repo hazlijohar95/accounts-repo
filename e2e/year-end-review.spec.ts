@@ -3,16 +3,20 @@ import { expect, test } from "@playwright/test";
 async function ensureWorkspaceImported(page: import("@playwright/test").Page) {
   await page.goto("/");
 
-  const importHeading = page.getByRole("heading", { name: /Import a real trial balance/ });
+  const importHeading = page.getByRole("heading", { name: /Import a mapped trial balance/ });
+  await importHeading.waitFor({ state: "visible", timeout: 5_000 }).catch(() => undefined);
   if (!(await importHeading.isVisible().catch(() => false))) return;
 
   await page.getByLabel("Entity name").fill("Nusantara Precision Sdn Bhd");
   await page.getByLabel("Registration number").fill("202001034561 (1390882-X)");
-  await page.getByLabel("Owner").fill("Hazli Johar");
+  await page.getByLabel("Owner", { exact: true }).fill("Hazli Johar");
+  await page.getByLabel("Owner email").fill("hazli@nusantara.test");
   await page.getByLabel("Firm").fill("Amjad & Hazli Advisory");
-  await page.getByLabel("Preparer").fill("Aina Rahman");
-  await page.getByLabel("Reviewer").fill("Amjad Salleh");
-  await page.getByLabel("Client signer").fill("Hazli Johar");
+  await page.getByLabel("Preparer", { exact: true }).fill("Aina Rahman");
+  await page.getByLabel("Reviewer", { exact: true }).fill("Amjad Salleh");
+  await page.getByLabel("Reviewer email").fill("aina@ahadvisory.test");
+  await page.getByLabel("Client signer", { exact: true }).fill("Hazli Johar");
+  await page.getByLabel("Client signer email").fill("aina@ahadvisory.test");
   await page.getByLabel("Branch label").fill("FY2026 Year-End");
   await page.getByLabel("Period start").fill("2025-07-01");
   await page.getByLabel("Period end").fill("2026-06-30");
@@ -45,6 +49,7 @@ test("prevents unsigned accounts by requiring reviewer approval before client si
   test.skip(testInfo.project.name !== "chromium", "mutating sign-off workflow runs once against the local backend");
 
   await ensureWorkspaceImported(page);
+  page.on("dialog", (dialog) => dialog.accept());
 
   await expect(page.getByRole("heading", { name: "Nusantara Precision Sdn Bhd" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign as client" })).toHaveCount(0);
