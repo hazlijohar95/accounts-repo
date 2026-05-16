@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -46,7 +46,7 @@ jobs:
       - name: Rust tests
         env:
           DATABASE_URL: postgres://accounts_repo:accounts_repo@127.0.0.1:5432/accounts_repo
-        run: cargo test
+        run: pnpm test:rust
 
       - name: Auth service typecheck
         env:
@@ -54,10 +54,10 @@ jobs:
         run: pnpm test:auth
 
       - name: Frontend tests
-        run: pnpm test
+        run: pnpm test:frontend
 
-      - name: Frontend build
-        run: pnpm build
+      - name: Build applications
+        run: pnpm build:all
 
       - name: Install Playwright browser
         run: pnpm --dir frontend exec playwright install --with-deps chromium

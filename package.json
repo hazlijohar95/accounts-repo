@@ -5,12 +5,21 @@
   "description": "Client-owned financial repos for Malaysia Sdn Bhd year-end review packs.",
   "scripts": {
     "dev": "pnpm --dir frontend dev",
+    "dev:frontend": "pnpm --dir frontend dev",
     "dev:auth": "pnpm --dir auth-service dev",
     "dev:backend": "cargo run -p accounts-repo-backend",
-    "build": "pnpm --dir frontend build",
-    "test": "pnpm --dir frontend test -- --run",
+    "build": "pnpm build:frontend",
+    "build:frontend": "pnpm --dir frontend build",
+    "build:auth": "pnpm --dir auth-service build",
+    "build:all": "pnpm build:auth && pnpm build:frontend",
+    "typecheck": "pnpm --dir auth-service typecheck && pnpm --dir frontend typecheck",
+    "test": "pnpm test:frontend",
+    "test:frontend": "pnpm --dir frontend test -- --run",
+    "test:rust": "cargo test",
     "test:auth": "pnpm --dir auth-service test",
-    "e2e": "pnpm --dir frontend exec playwright test -c ../playwright.config.ts"
+    "e2e": "pnpm --dir frontend exec playwright test -c ../playwright.config.ts",
+    "verify": "pnpm test:rust && pnpm test:auth && pnpm test:frontend && pnpm build:all",
+    "clean": "rm -rf frontend/dist auth-service/dist frontend/*.tsbuildinfo auth-service/*.tsbuildinfo test-results playwright-report"
   },
   "packageManager": "pnpm@10.11.0"
 }

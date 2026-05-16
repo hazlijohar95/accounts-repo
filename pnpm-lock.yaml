@@ -11,81 +11,81 @@ importers:
   auth-service:
     dependencies:
       '@hono/node-server':
-        specifier: latest
+        specifier: 2.0.2
         version: 2.0.2(hono@4.12.19)
       better-auth:
-        specifier: latest
+        specifier: 1.6.11
         version: 1.6.11(@prisma/client@5.22.0)(better-sqlite3@12.10.0)(drizzle-orm@0.41.0(@prisma/client@5.22.0)(@types/pg@8.20.0)(better-sqlite3@12.10.0)(kysely@0.28.17)(pg@8.20.0))(pg@8.20.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(vitest@4.1.6(@types/node@25.8.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.0)))
       hono:
-        specifier: latest
+        specifier: 4.12.19
         version: 4.12.19
       pg:
-        specifier: latest
+        specifier: 8.20.0
         version: 8.20.0
     devDependencies:
       '@better-auth/cli':
         specifier: ^1.4.21
         version: 1.4.21(@better-fetch/fetch@1.1.21)(better-call@1.3.5(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(vitest@4.1.6(@types/node@25.8.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.0)))
       '@types/node':
-        specifier: latest
+        specifier: 25.8.0
         version: 25.8.0
       '@types/pg':
-        specifier: latest
+        specifier: 8.20.0
         version: 8.20.0
       tsx:
-        specifier: latest
+        specifier: 4.22.0
         version: 4.22.0
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
 
   frontend:
     dependencies:
       '@vitejs/plugin-react':
-        specifier: latest
+        specifier: 6.0.2
         version: 6.0.2(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.0))
       better-auth:
-        specifier: latest
+        specifier: 1.6.11
         version: 1.6.11(@prisma/client@5.22.0)(better-sqlite3@12.10.0)(drizzle-orm@0.41.0(@prisma/client@5.22.0)(@types/pg@8.20.0)(better-sqlite3@12.10.0)(kysely@0.28.17)(pg@8.20.0))(pg@8.20.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(vitest@4.1.6(@types/node@25.8.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.0)))
       react:
-        specifier: latest
+        specifier: 19.2.6
         version: 19.2.6
       react-dom:
-        specifier: latest
+        specifier: 19.2.6
         version: 19.2.6(react@19.2.6)
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
       vite:
-        specifier: latest
+        specifier: 8.0.13
         version: 8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.0)
     devDependencies:
       '@playwright/test':
-        specifier: latest
+        specifier: 1.60.0
         version: 1.60.0
       '@testing-library/jest-dom':
-        specifier: latest
+        specifier: 6.9.1
         version: 6.9.1
       '@testing-library/react':
-        specifier: latest
+        specifier: 16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@testing-library/user-event':
-        specifier: latest
+        specifier: 14.6.1
         version: 14.6.1(@testing-library/dom@10.4.1)
       '@types/node':
-        specifier: latest
+        specifier: 25.8.0
         version: 25.8.0
       '@types/react':
-        specifier: latest
+        specifier: 19.2.14
         version: 19.2.14
       '@types/react-dom':
-        specifier: latest
+        specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.14)
       jsdom:
-        specifier: latest
+        specifier: 29.1.1
         version: 29.1.1(@noble/hashes@2.2.0)
       vitest:
-        specifier: latest
+        specifier: 4.1.6
         version: 4.1.6(@types/node@25.8.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.0))
 
 packages:

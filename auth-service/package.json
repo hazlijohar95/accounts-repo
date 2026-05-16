@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/server.ts",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm typecheck && pnpm test:integration",
@@ -14,16 +14,16 @@
     "auth:generate": "better-auth generate --config src/auth.ts"
   },
   "dependencies": {
-    "@hono/node-server": "latest",
-    "better-auth": "latest",
-    "hono": "latest",
-    "pg": "latest"
+    "@hono/node-server": "2.0.2",
+    "better-auth": "1.6.11",
+    "hono": "4.12.19",
+    "pg": "8.20.0"
   },
   "devDependencies": {
     "@better-auth/cli": "^1.4.21",
-    "@types/node": "latest",
-    "@types/pg": "latest",
-    "tsx": "latest",
-    "typescript": "latest"
+    "@types/node": "25.8.0",
+    "@types/pg": "8.20.0",
+    "tsx": "4.22.0",
+    "typescript": "6.0.3"
   }
 }
