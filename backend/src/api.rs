@@ -89,9 +89,7 @@ async fn import_workspace(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let workspace = store.import_workspace(request, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok((StatusCode::CREATED, Json(workspace)))
 }
 
@@ -134,9 +132,7 @@ async fn approve_reviewer(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let approval = store.approve_reviewer(review_pack_id, request, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok((StatusCode::CREATED, Json(approval)))
 }
 
@@ -149,9 +145,7 @@ async fn sign_client(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let approval = store.sign_client(review_pack_id, request, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok((StatusCode::CREATED, Json(approval)))
 }
 
@@ -164,9 +158,7 @@ async fn commit_correction(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let commit = store.commit_correction(repo_id, branch_id, request, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok((StatusCode::CREATED, Json(commit)))
 }
 
@@ -232,9 +224,7 @@ async fn open_review_query(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let query = store.open_review_query(review_pack_id, request, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok((StatusCode::CREATED, Json(query)))
 }
 
@@ -247,9 +237,7 @@ async fn resolve_review_query(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let query = store.resolve_review_query(review_pack_id, query_id, request, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok(Json(query))
 }
 
@@ -261,9 +249,7 @@ async fn signed_pack_export(
     let actor = state.auth.actor_from_headers(&headers).await?;
     let mut store = state.store.write().await;
     let export = store.signed_pack_export(review_pack_id, &actor)?;
-    let persisted_store = store.clone();
-    drop(store);
-    persist_if_configured(&state, &persisted_store).await?;
+    persist_if_configured(&state, &store).await?;
     Ok(Json(export))
 }
 

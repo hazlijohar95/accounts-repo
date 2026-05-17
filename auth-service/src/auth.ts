@@ -15,13 +15,22 @@ export const auth = betterAuth({
   database: authPool,
   emailAndPassword: {
     enabled: true,
+    requireEmailVerification: true,
+    autoSignIn: false,
     minPasswordLength: 12,
     revokeSessionsOnPasswordReset: true,
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
+      if (process.env.NODE_ENV === "production") {
+        console.info(`Verification email requested for ${user.email}`);
+        return;
+      }
+
       console.info(`Verification email for ${user.email}: ${url}`);
     },
+    sendOnSignUp: true,
+    sendOnSignIn: true,
   },
   trustedOrigins: (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "http://127.0.0.1:5173,http://127.0.0.1:5179")
     .split(",")

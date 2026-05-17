@@ -400,6 +400,11 @@ code,
   font-weight: 700;
 }
 
+.success-copy {
+  color: var(--green);
+  font-weight: 700;
+}
+
 .tab-panel {
   min-width: 0;
   padding: var(--space-md) var(--space-lg) var(--space-lg);

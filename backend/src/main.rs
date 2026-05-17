@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         store: Arc::new(RwLock::new(initial_store)),
-        auth: AuthConfig::from_env(),
+        auth: AuthConfig::from_env()?,
         persistence,
     };
 

@@ -4,13 +4,30 @@ import { auth } from "./auth";
 
 type AuthInstance = typeof auth;
 
+const DEVELOPMENT_INTERNAL_TOKEN = "development-internal-token";
+
+export function internalTokenFromEnv() {
+  const internalToken = process.env.AUTH_INTERNAL_TOKEN?.trim();
+  if (!internalToken) {
+    throw new Error("AUTH_INTERNAL_TOKEN is required for the Better Auth service");
+  }
+  if (internalToken === DEVELOPMENT_INTERNAL_TOKEN) {
+    throw new Error("AUTH_INTERNAL_TOKEN must not use the development placeholder value");
+  }
+  if (internalToken.startsWith("replace-with-")) {
+    throw new Error("AUTH_INTERNAL_TOKEN must be replaced before starting the Better Auth service");
+  }
+
+  return internalToken;
+}
+
 export function createApp(authInstance: AuthInstance = auth) {
   const app = new Hono();
   const frontendOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "http://127.0.0.1:5173,http://127.0.0.1:5179")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
-  const internalToken = process.env.AUTH_INTERNAL_TOKEN ?? "development-internal-token";
+  const internalToken = internalTokenFromEnv();
 
   app.use(
     "*",
@@ -31,12 +48,14 @@ export function createApp(authInstance: AuthInstance = auth) {
 
     const session = await authInstance.api.getSession({ headers: context.req.raw.headers });
     if (!session) return context.json({ error: "No active session" }, 401);
+    if (!session.user.emailVerified) return context.json({ error: "Email verification required" }, 401);
 
     return context.json({
       user: {
         id: session.user.id,
         name: session.user.name,
         email: session.user.email,
+        emailVerified: session.user.emailVerified,
       },
       session: {
         id: session.session.id,

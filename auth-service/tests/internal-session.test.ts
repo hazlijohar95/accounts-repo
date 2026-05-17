@@ -91,12 +91,45 @@ test("returns an internal session for a real Better Auth email signup to prevent
         }),
       });
       assert.equal(signupResponse.status, 200);
-      const signupPayload = (await signupResponse.json()) as { user: { email: string; name: string } };
+      const signupPayload = (await signupResponse.json()) as {
+        token: string | null;
+        user: { email: string; name: string };
+      };
+      assert.equal(signupPayload.token, null);
       assert.equal(signupPayload.user.email, email.toLowerCase());
       assert.equal(signupPayload.user.name, "Amjad Salleh");
 
-      const setCookie = signupResponse.headers.get("set-cookie");
-      assert.ok(setCookie, "Better Auth sign-up must return a Set-Cookie header");
+      const unverifiedSignInResponse = await app.request("/api/auth/sign-in/email", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: trustedOrigin,
+          "x-forwarded-for": "203.0.113.10",
+        },
+        body: JSON.stringify({
+          email,
+          password: "A-real-password-123",
+        }),
+      });
+      assert.equal(unverifiedSignInResponse.status, 403);
+
+      await authPool.query('UPDATE "user" SET "emailVerified" = true WHERE email = $1', [email.toLowerCase()]);
+
+      const verifiedSignInResponse = await app.request("/api/auth/sign-in/email", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: trustedOrigin,
+          "x-forwarded-for": "203.0.113.10",
+        },
+        body: JSON.stringify({
+          email,
+          password: "A-real-password-123",
+        }),
+      });
+      assert.equal(verifiedSignInResponse.status, 200);
+      const setCookie = verifiedSignInResponse.headers.get("set-cookie");
+      assert.ok(setCookie, "Better Auth sign-in must return a Set-Cookie header after verification");
       const cookie = sessionCookieFrom(setCookie);
 
       const missingInternalTokenResponse = await app.request("/internal/session", {
@@ -112,12 +145,13 @@ test("returns an internal session for a real Better Auth email signup to prevent
       });
       assert.equal(sessionResponse.status, 200);
       const sessionPayload = (await sessionResponse.json()) as {
-        user: { id: string; name: string; email: string };
+        user: { id: string; name: string; email: string; emailVerified: boolean };
         session: { id: string; expiresAt: string };
       };
       assert.ok(sessionPayload.user.id);
       assert.equal(sessionPayload.user.name, "Amjad Salleh");
       assert.equal(sessionPayload.user.email, email.toLowerCase());
+      assert.equal(sessionPayload.user.emailVerified, true);
       assert.ok(sessionPayload.session.id);
       assert.ok(sessionPayload.session.expiresAt);
 

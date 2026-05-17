@@ -60,9 +60,11 @@ async fn internal_session(headers: HeaderMap) -> Response {
         .unwrap_or_default();
 
     let user = if cookie.contains("session=reviewer") {
-        json!({"id": "seed-reviewer", "name": "Amjad Salleh", "email": "amjad@ahadvisory.test"})
+        json!({"id": "seed-reviewer", "name": "Amjad Salleh", "email": "amjad@ahadvisory.test", "emailVerified": true})
+    } else if cookie.contains("session=unverified") {
+        json!({"id": "seed-reviewer", "name": "Amjad Salleh", "email": "amjad@ahadvisory.test", "emailVerified": false})
     } else if cookie.contains("session=outsider") {
-        json!({"id": "outsider", "name": "Outside User", "email": "outside@example.test"})
+        json!({"id": "outsider", "name": "Outside User", "email": "outside@example.test", "emailVerified": true})
     } else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -72,6 +74,27 @@ async fn internal_session(headers: HeaderMap) -> Response {
     };
 
     (StatusCode::OK, Json(json!({"user": user}))).into_response()
+}
+
+#[tokio::test]
+async fn rejects_unverified_better_auth_session_to_prevent_email_role_capture() {
+    let auth_service_url = spawn_auth_service().await;
+    let app = production_auth_app(auth_service_url);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/repos")
+                .header(header::COOKIE, "session=unverified")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let error: serde_json::Value = read_json(response).await;
+    assert_eq!(error["error"], "Could not validate authentication session");
 }
 
 #[tokio::test]

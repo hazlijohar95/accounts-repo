@@ -432,11 +432,13 @@ function AuthScreen({ onAuthChanged }: { onAuthChanged: () => void }) {
   const [password, setPassword] = useState("accounts-repo-demo-2026");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPending(true);
     setError(null);
+    setNotice(null);
 
     const result = mode === "sign-up"
       ? await authClient.signUp.email({ email, password, name })
@@ -445,6 +447,12 @@ function AuthScreen({ onAuthChanged }: { onAuthChanged: () => void }) {
     setPending(false);
     if (result.error) {
       setError(result.error.message ?? "Authentication failed");
+      return;
+    }
+
+    if (mode === "sign-up") {
+      setNotice("Account created. Verify your email, then sign in.");
+      setMode("sign-in");
       return;
     }
 
@@ -481,6 +489,7 @@ function AuthScreen({ onAuthChanged }: { onAuthChanged: () => void }) {
           <input required minLength={12} type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
         </label>
         {error ? <p className="error-copy" role="alert">{error}</p> : null}
+        {notice ? <p className="success-copy" role="status">{notice}</p> : null}
         <button className="primary-button" disabled={pending} type="submit">
           {pending ? "Checking..." : mode === "sign-up" ? "Create account" : "Sign in"}
         </button>

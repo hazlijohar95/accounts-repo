@@ -31,6 +31,7 @@ Create and export local environment variables:
 
 ```bash
 cp .env.example .env
+# Replace AUTH_INTERNAL_TOKEN and BETTER_AUTH_SECRET with local random values before sourcing.
 set -a; source .env; set +a
 ```
 
