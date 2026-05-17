@@ -8,10 +8,12 @@ use crate::{
         ReviewQueryRequest, StoreError, WorkspaceImportRequest,
     },
 };
+use axum::extract::Request;
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -62,6 +64,7 @@ pub fn app(state: AppState) -> Router {
             post(signed_pack_export),
         )
         .layer(cors_layer())
+        .layer(middleware::from_fn(require_proxy_token_if_configured))
         .with_state(state)
 }
 
@@ -281,6 +284,31 @@ fn cors_layer() -> CorsLayer {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([header::CONTENT_TYPE])
         .allow_credentials(true)
+}
+
+async fn require_proxy_token_if_configured(request: Request, next: Next) -> Response {
+    let expected_token = std::env::var("ACCOUNTS_REPO_PROXY_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+
+    if let Some(expected_token) = expected_token {
+        let actual_token = request
+            .headers()
+            .get("x-accounts-repo-proxy-token")
+            .and_then(|value| value.to_str().ok());
+        if actual_token != Some(expected_token.as_str()) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Forbidden origin".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    next.run(request).await
 }
 
 #[derive(Serialize)]

@@ -94,11 +94,17 @@ BETTER_AUTH_URL=https://<frontend-host>
 BETTER_AUTH_TRUSTED_ORIGINS=https://<frontend-host>
 AUTH_SERVICE_URL=https://<auth-service-host>
 AUTH_INTERNAL_TOKEN=<shared internal token>
+ACCOUNTS_REPO_PROXY_TOKEN=<shared Pages/Tunnel proxy token>
+ACCOUNTS_REPO_EMAIL_MODE=resend
+RESEND_API_KEY=<resend-api-key>
+ACCOUNTS_REPO_EMAIL_FROM="Accounts Repo <no-reply@your-domain>"
 ACCOUNTS_REPO_BIND_ADDR=0.0.0.0:8080
 CORS_ALLOWED_ORIGIN=https://<frontend-host>
 ```
 
 `ACCOUNTS_REPO_AUTH_DISABLED_DEV=1` is only for explicit local or E2E dev-auth flows. Do not enable it in production.
+
+See `docs/production.md` for launch routing and `docs/cloudflare.md` for Cloudflare Pages + Tunnel deployment.
 
 ## Database
 
@@ -122,7 +128,7 @@ pnpm --dir auth-service auth:migrate --yes
 
 ## Real Data Import
 
-Run the backend and frontend, then import a CSV or XLSX workbook. XLSX imports read the first sheet. The source file hash, parser, row count, and uploader are preserved with the review pack evidence.
+Run the backend and frontend, then import a CSV export. XLSX imports are disabled for launch until a dependency with a clean security posture is selected. The source file hash, parser, row count, and uploader are preserved with the review pack evidence.
 
 The imported table must have these columns:
 

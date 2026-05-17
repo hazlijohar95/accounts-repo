@@ -4,17 +4,21 @@ export interface ParsedTrialBalanceFile {
   csvText: string;
   fileName: string;
   fileHash: string;
-  parser: "csv" | "xlsx";
+  parser: "csv";
   rowCount: number;
   trialBalance: ImportTrialBalanceLine[];
 }
 
 export async function parseTrialBalanceFile(file: File): Promise<ParsedTrialBalanceFile> {
+  if (!isCsvFile(file)) {
+    throw new Error("Only CSV trial balance imports are supported for launch. Export the mapped trial balance as CSV, then import it here.");
+  }
+
   const bytes = new Uint8Array(await file.arrayBuffer());
   const fileHash = await sha256Hex(bytes);
   const fileName = file.name;
-  const parser = isSpreadsheet(file) ? "xlsx" : "csv";
-  const csvText = parser === "xlsx" ? await workbookToCsv(bytes) : new TextDecoder().decode(bytes);
+  const parser = "csv";
+  const csvText = new TextDecoder().decode(bytes);
   const trialBalance = parseTrialBalanceCsv(csvText);
 
   return {
@@ -116,19 +120,9 @@ function parseCsv(input: string): string[][] {
   return rows;
 }
 
-function isSpreadsheet(file: File): boolean {
+function isCsvFile(file: File): boolean {
   const name = file.name.toLowerCase();
-  return name.endsWith(".xlsx") || name.endsWith(".xlsm") || name.endsWith(".xls");
-}
-
-async function workbookToCsv(bytes: Uint8Array): Promise<string> {
-  const XLSX = await import("xlsx");
-  const workbook = XLSX.read(bytes, { type: "array" });
-  const firstSheetName = workbook.SheetNames[0];
-  if (!firstSheetName) throw new Error("Workbook does not contain any sheets");
-
-  const sheet = workbook.Sheets[firstSheetName];
-  return XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+  return name.endsWith(".csv") || file.type === "text/csv";
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

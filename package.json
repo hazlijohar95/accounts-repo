@@ -9,9 +9,11 @@
     "dev:auth": "pnpm --dir auth-service dev",
     "dev:backend": "cargo run -p accounts-repo-backend",
     "build": "pnpm build:frontend",
+    "build:backend": "cargo build --release -p accounts-repo-backend",
     "build:frontend": "pnpm --dir frontend build",
     "build:auth": "pnpm --dir auth-service build",
-    "build:all": "pnpm build:auth && pnpm build:frontend",
+    "build:all": "pnpm build:backend && pnpm build:auth && pnpm build:frontend",
+    "deploy:cloudflare:pages": "pnpm build:frontend && CLOUDFLARE_ACCOUNT_ID=9c006d850453ab5c068f5688d138521b npx -y -p node@22 -p wrangler@4 wrangler pages deploy frontend/dist --project-name accounts-repo --branch main",
     "typecheck": "pnpm --dir auth-service typecheck && pnpm --dir frontend typecheck",
     "test": "pnpm test:frontend",
     "test:frontend": "pnpm --dir frontend test -- --run",
@@ -21,5 +23,11 @@
     "verify": "pnpm test:rust && pnpm test:auth && pnpm test:frontend && pnpm build:all",
     "clean": "rm -rf frontend/dist auth-service/dist frontend/*.tsbuildinfo auth-service/*.tsbuildinfo test-results playwright-report"
   },
-  "packageManager": "pnpm@10.11.0"
+  "packageManager": "pnpm@10.11.0",
+  "pnpm": {
+    "overrides": {
+      "drizzle-orm": "0.45.2",
+      "lodash": "4.18.1"
+    }
+  }
 }

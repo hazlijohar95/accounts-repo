@@ -6,6 +6,10 @@ type AuthInstance = typeof auth;
 
 const DEVELOPMENT_INTERNAL_TOKEN = "development-internal-token";
 
+function proxyTokenFromEnv() {
+  return process.env.ACCOUNTS_REPO_PROXY_TOKEN?.trim() || null;
+}
+
 export function internalTokenFromEnv() {
   const internalToken = process.env.AUTH_INTERNAL_TOKEN?.trim();
   if (!internalToken) {
@@ -16,6 +20,9 @@ export function internalTokenFromEnv() {
   }
   if (internalToken.startsWith("replace-with-")) {
     throw new Error("AUTH_INTERNAL_TOKEN must be replaced before starting the Better Auth service");
+  }
+  if (process.env.NODE_ENV === "production" && internalToken.length < 32) {
+    throw new Error("AUTH_INTERNAL_TOKEN must be 32+ characters in production");
   }
 
   return internalToken;
@@ -34,10 +41,19 @@ export function createApp(authInstance: AuthInstance = auth) {
     cors({
       origin: (origin) => (frontendOrigins.includes(origin) ? origin : frontendOrigins[0]),
       credentials: true,
-      allowHeaders: ["content-type", "cookie", "x-internal-auth-token"],
+      allowHeaders: ["content-type", "cookie", "x-accounts-repo-proxy-token", "x-internal-auth-token"],
       allowMethods: ["GET", "POST", "OPTIONS"],
     }),
   );
+
+  app.use("/api/auth/*", async (context, next) => {
+    const proxyToken = proxyTokenFromEnv();
+    if (proxyToken && context.req.header("x-accounts-repo-proxy-token") !== proxyToken) {
+      return context.json({ error: "Forbidden origin" }, 403);
+    }
+
+    await next();
+  });
 
   app.on(["GET", "POST"], "/api/auth/*", (context) => authInstance.handler(context.req.raw));
 

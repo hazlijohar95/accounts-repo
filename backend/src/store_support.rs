@@ -13,10 +13,14 @@ pub(crate) fn validate_import_request(request: &WorkspaceImportRequest) -> Resul
         ("jurisdiction", request.jurisdiction.as_str()),
         ("entity_type", request.entity_type.as_str()),
         ("owner_name", request.owner_name.as_str()),
+        ("owner_email", request.owner_email.as_str()),
         ("firm_name", request.firm_name.as_str()),
         ("preparer_name", request.preparer_name.as_str()),
+        ("preparer_email", request.preparer_email.as_str()),
         ("reviewer_name", request.reviewer_name.as_str()),
+        ("reviewer_email", request.reviewer_email.as_str()),
         ("client_signer_name", request.client_signer_name.as_str()),
+        ("client_signer_email", request.client_signer_email.as_str()),
         ("branch_label", request.branch_label.as_str()),
         ("source_label", request.source_label.as_str()),
     ];
@@ -38,6 +42,8 @@ pub(crate) fn validate_import_request(request: &WorkspaceImportRequest) -> Resul
             "trial_balance must include at least one account".to_string(),
         ));
     }
+
+    validate_custody_emails(request)?;
 
     let mut account_codes = BTreeSet::new();
     for line in &request.trial_balance {
@@ -84,12 +90,48 @@ pub(crate) fn validate_import_request(request: &WorkspaceImportRequest) -> Resul
     Ok(())
 }
 
-pub(crate) fn email_or_default(email: &str, name: &str, domain: &str) -> String {
-    if email.trim().is_empty() {
-        user_email(name, domain)
-    } else {
-        email.trim().to_ascii_lowercase()
+fn validate_custody_emails(request: &WorkspaceImportRequest) -> Result<(), StoreError> {
+    for (field, value) in [
+        ("owner_email", request.owner_email.as_str()),
+        ("preparer_email", request.preparer_email.as_str()),
+        ("reviewer_email", request.reviewer_email.as_str()),
+        ("client_signer_email", request.client_signer_email.as_str()),
+    ] {
+        validate_email_field(field, value)?;
     }
+
+    let owner_email = normalize_email(&request.owner_email);
+    let preparer_email = normalize_email(&request.preparer_email);
+    let reviewer_email = normalize_email(&request.reviewer_email);
+    let signer_email = normalize_email(&request.client_signer_email);
+
+    if preparer_email == reviewer_email
+        || preparer_email == signer_email
+        || reviewer_email == signer_email
+        || owner_email == preparer_email
+        || owner_email == reviewer_email
+    {
+        return Err(StoreError::InvalidImport(
+            "custody role emails must be distinct, except owner_email may match client_signer_email".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_email_field(field: &str, value: &str) -> Result<(), StoreError> {
+    let email = value.trim();
+    if email.contains(char::is_whitespace) || !email.contains('@') {
+        return Err(StoreError::InvalidImport(format!(
+            "{field} must be a valid email address"
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn normalize_email(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
 }
 
 pub(crate) fn actor_id_for_email(actor: &AuthenticatedActor, email: &str) -> Option<String> {
@@ -128,15 +170,4 @@ pub(crate) fn validate_adjustment_accounts(
     }
 
     Ok(())
-}
-
-fn user_email(name: &str, domain: &str) -> String {
-    let local = name
-        .trim()
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(".");
-
-    format!("{}@{}", local, domain)
 }

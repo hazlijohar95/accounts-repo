@@ -186,7 +186,18 @@ impl SnapshotStateStore {
         let mut branches = BTreeMap::new();
         let mut branch_by_repo = BTreeMap::new();
         for (id, legal_entity_id, label, period_start, period_end, status, head_commit_id) in
-            sqlx::query_as::<_, (Uuid, Uuid, String, NaiveDate, NaiveDate, String, Option<Uuid>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    Uuid,
+                    String,
+                    NaiveDate,
+                    NaiveDate,
+                    String,
+                    Option<Uuid>,
+                ),
+            >(
                 r#"
                 SELECT id, legal_entity_id, label, period_start, period_end, status, head_commit_id
                 FROM period_branches
@@ -556,7 +567,8 @@ impl SnapshotStateStore {
                 });
         }
 
-        let mut signed_exports_by_pack: BTreeMap<Uuid, Vec<SignedPackExportRecord>> = BTreeMap::new();
+        let mut signed_exports_by_pack: BTreeMap<Uuid, Vec<SignedPackExportRecord>> =
+            BTreeMap::new();
         for (
             id,
             review_pack_id,
@@ -803,9 +815,7 @@ impl SnapshotStateStore {
             };
 
             for line in &snapshot.trial_balance {
-                let account_id = self
-                    .upsert_account(branch.legal_entity_id, line)
-                    .await?;
+                let account_id = self.upsert_account(branch.legal_entity_id, line).await?;
                 let trial_balance_line_id = stable_uuid(&[
                     "trial_balance_line",
                     &branch.id.to_string(),
@@ -909,7 +919,8 @@ impl SnapshotStateStore {
         legal_entity_id: Uuid,
         line: &TrialBalanceLine,
     ) -> anyhow::Result<Uuid> {
-        let account_id = stable_uuid(&["account", &legal_entity_id.to_string(), &line.account_code]);
+        let account_id =
+            stable_uuid(&["account", &legal_entity_id.to_string(), &line.account_code]);
         Ok(sqlx::query_scalar(
             r#"
             INSERT INTO accounts (id, legal_entity_id, code, name, account_type)

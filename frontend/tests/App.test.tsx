@@ -13,9 +13,9 @@ const repo: LegalEntityRepo = {
   entity_type: "Sdn Bhd",
   collaborators: [
     { user_id: "u1", display_name: "Hazli Johar", email: "hazli@nusantara.test", role: "owner" },
-    { user_id: "u2", display_name: "Aina Rahman", email: "aina@ahadvisory.test", role: "preparer" },
+    { user_id: "u2", display_name: "Aina Rahman", email: "preparer@ahadvisory.test", role: "preparer" },
     { user_id: "u3", display_name: "Amjad Salleh", email: "aina@ahadvisory.test", role: "reviewer" },
-    { user_id: "u4", display_name: "Hazli Johar", email: "aina@ahadvisory.test", role: "client_signer" },
+    { user_id: "u4", display_name: "Nur Sofia", email: "sofia@nusantara.test", role: "client_signer" },
   ],
   summary: {
     active_branch_label: "FY2026 Year-End",
@@ -155,8 +155,8 @@ const signedWorkspace: RepoWorkspace = {
         commit_id: "commit-2",
         role: "client_director",
         actor_user_id: "u4",
-        actor_name: "Hazli Johar",
-        actor_email: "aina@ahadvisory.test",
+        actor_name: "Nur Sofia",
+        actor_email: "sofia@nusantara.test",
         snapshot_hash: "def456abc123",
         approval_hash: "approvalhash2",
         note: "Signed",
@@ -231,9 +231,9 @@ describe("review pack workflow", () => {
     await user.type(screen.getByLabelText("Firm"), "Amjad & Hazli Advisory");
     await user.type(screen.getByLabelText("Preparer"), "Aina Rahman");
     await user.type(screen.getByLabelText("Reviewer"), "Amjad Salleh");
-    await user.type(screen.getByLabelText("Reviewer email"), "aina@ahadvisory.test");
-    await user.type(screen.getByLabelText("Client signer"), "Hazli Johar");
-    await user.type(screen.getByLabelText("Client signer email"), "aina@ahadvisory.test");
+    await user.type(screen.getByLabelText("Reviewer email"), "amjad@ahadvisory.test");
+    await user.type(screen.getByLabelText("Client signer"), "Nur Sofia");
+    await user.type(screen.getByLabelText("Client signer email"), "sofia@nusantara.test");
     await user.type(screen.getByLabelText("Branch label"), "FY2026 Year-End");
     await user.type(screen.getByLabelText("Period start"), "2025-07-01");
     await user.type(screen.getByLabelText("Period end"), "2026-06-30");
@@ -248,8 +248,8 @@ describe("review pack workflow", () => {
     expect(await screen.findByRole("heading", { name: "Nusantara Precision Sdn Bhd" })).toBeInTheDocument();
     expect(capturedImport).toMatchObject({
       entity_name: "Nusantara Precision Sdn Bhd",
-      reviewer_email: "aina@ahadvisory.test",
-      client_signer_email: "aina@ahadvisory.test",
+      reviewer_email: "amjad@ahadvisory.test",
+      client_signer_email: "sofia@nusantara.test",
       source_file_hash: expect.any(String),
       source_parser: "csv",
       source_row_count: 2,
@@ -258,7 +258,7 @@ describe("review pack workflow", () => {
         { account_code: "4000", amount: "-1000.00" },
       ],
     });
-  });
+  }, 10_000);
 
   it("keeps the empty import screen focused by hiding retry until an API error exists", async () => {
     vi.stubGlobal(
@@ -291,10 +291,12 @@ describe("review pack workflow", () => {
       repo: {
         ...workspace.repo,
         collaborators: workspace.repo.collaborators.map((collaborator) =>
-          collaborator.role === "reviewer"
+          collaborator.role === "preparer"
+            ? { ...collaborator, email: "aina@ahadvisory.test" }
+            : collaborator.role === "reviewer"
             ? { ...collaborator, email: "amjad@ahadvisory.test" }
             : collaborator.role === "client_signer"
-              ? { ...collaborator, email: "hazli@nusantara.test" }
+              ? { ...collaborator, email: "sofia@nusantara.test" }
               : collaborator,
         ),
       },

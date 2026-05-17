@@ -442,10 +442,11 @@ function RepoTabs({
 }
 
 function AuthScreen({ onAuthChanged }: { onAuthChanged: () => void }) {
+  const showLocalDefaults = import.meta.env.DEV;
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
-  const [name, setName] = useState("Aina Rahman");
-  const [email, setEmail] = useState("aina@ahadvisory.test");
-  const [password, setPassword] = useState("accounts-repo-demo-2026");
+  const [name, setName] = useState(showLocalDefaults ? "Aina Rahman" : "");
+  const [email, setEmail] = useState(showLocalDefaults ? "aina@ahadvisory.test" : "");
+  const [password, setPassword] = useState(showLocalDefaults ? "accounts-repo-demo-2026" : "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -815,8 +816,8 @@ function ReviewPackPanel({
   const openQueries = pack.open_queries.filter((query) => query.status === "open");
   const hasOpenQueries = openQueries.length > 0;
   const canOpenQuery = hasAnyRole(currentUserRoles, ["preparer", "reviewer", "owner"]);
-  const canApprove = hasAnyRole(currentUserRoles, ["reviewer"]);
-  const canSign = hasAnyRole(currentUserRoles, ["client_signer", "owner"]);
+  const canApprove = hasAnyRole(currentUserRoles, ["reviewer"]) && !hasAnyRole(currentUserRoles, ["owner", "preparer", "client_signer"]);
+  const canSign = hasAnyRole(currentUserRoles, ["client_signer", "owner"]) && !hasAnyRole(currentUserRoles, ["preparer", "reviewer"]);
   const canExportSignedPack = hasAnyRole(currentUserRoles, ["owner", "client_signer", "reviewer"]);
   const querySummary = hasOpenQueries
     ? `${openQueries.length} open ${openQueries.length === 1 ? "query" : "queries"}`

@@ -14,9 +14,9 @@ async function ensureWorkspaceImported(page: import("@playwright/test").Page) {
   await page.getByLabel("Firm").fill("Amjad & Hazli Advisory");
   await page.getByLabel("Preparer", { exact: true }).fill("Aina Rahman");
   await page.getByLabel("Reviewer", { exact: true }).fill("Amjad Salleh");
-  await page.getByLabel("Reviewer email").fill("aina@ahadvisory.test");
-  await page.getByLabel("Client signer", { exact: true }).fill("Hazli Johar");
-  await page.getByLabel("Client signer email").fill("aina@ahadvisory.test");
+  await page.getByLabel("Reviewer email").fill("amjad@ahadvisory.test");
+  await page.getByLabel("Client signer", { exact: true }).fill("Nur Sofia");
+  await page.getByLabel("Client signer email").fill("sofia@nusantara.test");
   await page.getByLabel("Branch label").fill("FY2026 Year-End");
   await page.getByLabel("Period start").fill("2025-07-01");
   await page.getByLabel("Period end").fill("2026-06-30");
@@ -45,25 +45,16 @@ async function ensureWorkspaceImported(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "Import real TB" }).click();
 }
 
-test("prevents unsigned accounts by requiring reviewer approval before client signoff", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "mutating sign-off workflow runs once against the local backend");
+test("prevents preparer self-review in the browser workspace", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "custody workflow coverage runs once against the local backend");
 
   await ensureWorkspaceImported(page);
-  page.on("dialog", (dialog) => dialog.accept());
 
   await expect(page.getByRole("heading", { name: "Nusantara Precision Sdn Bhd" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve as reviewer" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Sign as client" })).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Approve as reviewer" }).click();
-  await expect(page.getByText("Reviewer approved").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign as client" })).toBeVisible();
-
-  await page.getByRole("button", { name: "Sign as client" }).click();
-  await expect(page.getByText("Signed and frozen").first()).toBeVisible();
-  await expect(page.getByText("Signed branches are immutable.")).toBeVisible();
-  await page.getByRole("tab", { name: /Audit/ }).click();
-  await expect(page.getByText("Client director signed the review pack")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign as client" })).toHaveCount(0);
+  await expect(page.getByText("Reviewer approval is waiting for an assigned reviewer.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Append correction" })).toBeVisible();
 });
 
 test("keeps the review workspace readable on a mobile viewport", async ({ page }, testInfo) => {

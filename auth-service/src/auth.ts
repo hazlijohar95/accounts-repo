@@ -1,12 +1,17 @@
 import { betterAuth } from "better-auth";
 import { organization } from "better-auth/plugins";
 import { Pool } from "pg";
+import { assertEmailDeliveryConfigured, sendAuthEmail } from "./email";
 
 const databaseUrl = process.env.DATABASE_URL;
+const isProduction = process.env.NODE_ENV === "production";
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required for the Better Auth service");
 }
+
+assertProductionAuthConfig();
+assertEmailDeliveryConfigured();
 
 export const authPool = new Pool({ connectionString: databaseUrl });
 
@@ -15,6 +20,13 @@ export const auth = betterAuth({
   database: authPool,
   emailAndPassword: {
     enabled: true,
+    sendResetPassword: async ({ user, url }) => {
+      await sendAuthEmail({
+        to: user.email,
+        subject: "Reset your Accounts Repo password",
+        text: `Reset your Accounts Repo password using this link: ${url}`,
+      });
+    },
     requireEmailVerification: true,
     autoSignIn: false,
     minPasswordLength: 12,
@@ -22,12 +34,11 @@ export const auth = betterAuth({
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
-      if (process.env.NODE_ENV === "production") {
-        console.info(`Verification email requested for ${user.email}`);
-        return;
-      }
-
-      console.info(`Verification email for ${user.email}: ${url}`);
+      await sendAuthEmail({
+        to: user.email,
+        subject: "Verify your Accounts Repo email",
+        text: `Verify your Accounts Repo email using this link: ${url}`,
+      });
     },
     sendOnSignUp: true,
     sendOnSignIn: true,
@@ -57,6 +68,7 @@ export const auth = betterAuth({
     },
   },
   advanced: {
+    useSecureCookies: isProduction,
     ipAddress: {
       ipAddressHeaders: ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"],
     },
@@ -79,3 +91,25 @@ export const auth = betterAuth({
 });
 
 export type AuthSession = typeof auth.$Infer.Session;
+
+function assertProductionAuthConfig() {
+  if (!isProduction) return;
+
+  const secret = process.env.BETTER_AUTH_SECRET?.trim();
+  if (!secret || secret.length < 32 || secret.startsWith("replace-with-")) {
+    throw new Error("BETTER_AUTH_SECRET must be a real 32+ character production secret");
+  }
+
+  const baseUrl = process.env.BETTER_AUTH_URL?.trim();
+  if (!baseUrl?.startsWith("https://")) {
+    throw new Error("BETTER_AUTH_URL must be an HTTPS production URL");
+  }
+
+  const trustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (trustedOrigins.length === 0 || trustedOrigins.some((origin) => !origin.startsWith("https://"))) {
+    throw new Error("BETTER_AUTH_TRUSTED_ORIGINS must contain HTTPS production origins");
+  }
+}

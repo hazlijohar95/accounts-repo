@@ -67,7 +67,7 @@ function ImportWorkspaceForm({
   const [csvText, setCsvText] = useState("");
   const [sourceFileName, setSourceFileName] = useState<string | null>(null);
   const [sourceFileHash, setSourceFileHash] = useState<string | null>(null);
-  const [sourceParser, setSourceParser] = useState<"csv" | "xlsx">("csv");
+  const [sourceParser, setSourceParser] = useState<"csv">("csv");
   const [sourceRowCount, setSourceRowCount] = useState<number | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
 
@@ -75,6 +75,18 @@ function ImportWorkspaceForm({
     event.preventDefault();
 
     try {
+      const custodyError = custodyEmailError({
+        currentUserEmail: currentUser.email,
+        ownerEmail,
+        preparerEmail,
+        reviewerEmail,
+        signerEmail: clientSignerEmail,
+      });
+      if (custodyError) {
+        setParseError(custodyError);
+        return;
+      }
+
       const trialBalance = parseTrialBalanceCsv(csvText);
       const fileHash = sourceFileHash ?? await hashTrialBalanceText(csvText);
       setParseError(null);
@@ -216,8 +228,8 @@ function ImportWorkspaceForm({
       </label>
 
       <label>
-        Source file
-        <input accept=".csv,text/csv,.xlsx,.xlsm,.xls" type="file" onChange={(event) => void handleFileSelect(event)} />
+        Source CSV file
+        <input accept=".csv,text/csv" type="file" onChange={(event) => void handleFileSelect(event)} />
       </label>
 
       {sourceFileHash ? (
@@ -238,4 +250,38 @@ function ImportWorkspaceForm({
       </button>
     </form>
   );
+}
+
+function custodyEmailError({
+  currentUserEmail,
+  ownerEmail,
+  preparerEmail,
+  reviewerEmail,
+  signerEmail,
+}: {
+  currentUserEmail: string;
+  ownerEmail: string;
+  preparerEmail: string;
+  reviewerEmail: string;
+  signerEmail: string;
+}) {
+  const current = normalizeEmail(currentUserEmail);
+  const owner = normalizeEmail(ownerEmail);
+  const preparer = normalizeEmail(preparerEmail);
+  const reviewer = normalizeEmail(reviewerEmail);
+  const signer = normalizeEmail(signerEmail);
+
+  if (preparer !== current) {
+    return "Preparer email must match your signed-in email.";
+  }
+
+  if (preparer === reviewer || preparer === signer || reviewer === signer || owner === preparer || owner === reviewer) {
+    return "Custody role emails must be distinct. Owner email may only match the client signer.";
+  }
+
+  return null;
+}
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
 }

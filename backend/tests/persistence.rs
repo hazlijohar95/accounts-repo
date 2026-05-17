@@ -355,12 +355,11 @@ async fn stores_signed_review_pack_in_normalized_tables_to_prevent_schema_contra
     .await?;
     assert_eq!(signed_pack_count, 1);
 
-    let rewrite_commit = sqlx::query(
-        r#"UPDATE commits SET message = 'Rewritten history' WHERE id = $1::uuid"#,
-    )
-    .bind(commit_id.to_string())
-    .execute(&mut connection)
-    .await;
+    let rewrite_commit =
+        sqlx::query(r#"UPDATE commits SET message = 'Rewritten history' WHERE id = $1::uuid"#)
+            .bind(commit_id.to_string())
+            .execute(&mut connection)
+            .await;
     assert!(rewrite_commit.is_err());
 
     let duplicate_role = sqlx::query(
@@ -417,7 +416,10 @@ async fn persists_imported_workspace_across_fresh_state_load_to_prevent_restart_
     );
     assert_eq!(reloaded_workspace.commits.len(), 2);
     assert_eq!(reloaded_workspace.import_sources.len(), 1);
-    assert_eq!(reloaded_workspace.import_sources[0].file_hash, "test-source-hash");
+    assert_eq!(
+        reloaded_workspace.import_sources[0].file_hash,
+        "test-source-hash"
+    );
     assert_eq!(
         reloaded_workspace.review_pack.id,
         imported_workspace.review_pack.id

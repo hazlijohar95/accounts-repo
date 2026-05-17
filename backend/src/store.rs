@@ -3,11 +3,10 @@ use crate::domain::{
     AccountType, Adjustment, AdjustmentLine, Approval, AuditEvent, AuditEventType, BranchStatus,
     Collaborator, Commit, DomainError, FinancialSnapshot, FsImpactDiff, ImportSource,
     LegalEntityRepo, Mapping, Organization, PeriodBranch, RepoRole, ReviewPack, ReviewQuery,
-    ReviewStatus, TrialBalanceLine, User, compare_commits, create_commit, repo_summary,
-    short_hash,
+    ReviewStatus, TrialBalanceLine, User, compare_commits, create_commit, repo_summary, short_hash,
 };
 use crate::store_support::{
-    actor_id_for_email, email_or_default, validate_adjustment_accounts, validate_import_request,
+    actor_id_for_email, normalize_email, validate_adjustment_accounts, validate_import_request,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -444,6 +443,17 @@ impl AppStore {
     ) -> Result<RepoWorkspace, StoreError> {
         validate_import_request(&request)?;
 
+        let owner_email = normalize_email(&request.owner_email);
+        let preparer_email = normalize_email(&request.preparer_email);
+        let reviewer_email = normalize_email(&request.reviewer_email);
+        let signer_email = normalize_email(&request.client_signer_email);
+
+        if !preparer_email.eq_ignore_ascii_case(&actor.email) {
+            return Err(StoreError::InvalidImport(
+                "preparer_email must match the authenticated user email".to_string(),
+            ));
+        }
+
         let client_org_id = Uuid::new_v4();
         let firm_org_id = Uuid::new_v4();
         let owner_id = Uuid::new_v4();
@@ -466,24 +476,6 @@ impl AppStore {
                 id: firm_org_id,
                 name: request.firm_name.clone(),
             },
-        );
-
-        let owner_email =
-            email_or_default(&request.owner_email, &request.owner_name, "client.local");
-        let preparer_email = if request.preparer_email.trim().is_empty() {
-            actor.email.clone()
-        } else {
-            request.preparer_email.trim().to_ascii_lowercase()
-        };
-        let reviewer_email = email_or_default(
-            &request.reviewer_email,
-            &request.reviewer_name,
-            "firm.local",
-        );
-        let signer_email = email_or_default(
-            &request.client_signer_email,
-            &request.client_signer_name,
-            "client.local",
         );
 
         self.users.insert(
@@ -870,6 +862,12 @@ impl AppStore {
             .map(|pack| pack.legal_entity_id)
             .ok_or(StoreError::NotFound)?;
         self.require_repo_role(legal_entity_id, actor, &[RepoRole::Reviewer])?;
+        self.reject_repo_roles(
+            legal_entity_id,
+            actor,
+            &[RepoRole::Owner, RepoRole::Preparer, RepoRole::ClientSigner],
+            "reviewer approval must be performed by an independent reviewer",
+        )?;
 
         let (commit_id, snapshot_hash) = self.review_pack_commit_identity(review_pack_id)?;
         let (approval, legal_entity_id) = {
@@ -914,6 +912,12 @@ impl AppStore {
             legal_entity_id,
             actor,
             &[RepoRole::ClientSigner, RepoRole::Owner],
+        )?;
+        self.reject_repo_roles(
+            legal_entity_id,
+            actor,
+            &[RepoRole::Preparer, RepoRole::Reviewer],
+            "client sign-off must be performed by an independent client signer or owner",
         )?;
 
         let (commit_id, snapshot_hash) = self.review_pack_commit_identity(review_pack_id)?;
@@ -1248,7 +1252,8 @@ impl AppStore {
             id: payload.id,
             review_pack_id,
             commit_id: signed_commit_id,
-            payload_json: serde_json::to_value(&payload).expect("signed export payload must serialize"),
+            payload_json: serde_json::to_value(&payload)
+                .expect("signed export payload must serialize"),
             payload_hash,
             exported_by: payload.exported_by.name.clone(),
             exported_by_user_id: payload.exported_by.auth_user_id.clone(),
@@ -1384,11 +1389,8 @@ impl AppStore {
         actor: &AuthenticatedActor,
         allowed_roles: &[RepoRole],
     ) -> Result<(), StoreError> {
-        let repo = self.repos.get(&repo_id).ok_or(StoreError::NotFound)?;
-        let allowed = repo.collaborators.iter().any(|collaborator| {
-            allowed_roles.contains(&collaborator.role)
-                && self.collaborator_matches_actor(collaborator.user_id, &collaborator.email, actor)
-        });
+        let roles = self.actor_roles_for_repo(repo_id, actor)?;
+        let allowed = roles.iter().any(|role| allowed_roles.contains(role));
 
         if allowed {
             Ok(())
@@ -1397,6 +1399,37 @@ impl AppStore {
                 "authenticated user does not have the required repo role".to_string(),
             ))
         }
+    }
+
+    fn reject_repo_roles(
+        &self,
+        repo_id: Uuid,
+        actor: &AuthenticatedActor,
+        rejected_roles: &[RepoRole],
+        message: &str,
+    ) -> Result<(), StoreError> {
+        let roles = self.actor_roles_for_repo(repo_id, actor)?;
+        if roles.iter().any(|role| rejected_roles.contains(role)) {
+            Err(StoreError::Forbidden(message.to_string()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn actor_roles_for_repo(
+        &self,
+        repo_id: Uuid,
+        actor: &AuthenticatedActor,
+    ) -> Result<Vec<RepoRole>, StoreError> {
+        let repo = self.repos.get(&repo_id).ok_or(StoreError::NotFound)?;
+        Ok(repo
+            .collaborators
+            .iter()
+            .filter(|collaborator| {
+                self.collaborator_matches_actor(collaborator.user_id, &collaborator.email, actor)
+            })
+            .map(|collaborator| collaborator.role.clone())
+            .collect())
     }
 
     fn actor_collaborates(&self, repo: &LegalEntityRepo, actor: &AuthenticatedActor) -> bool {
@@ -1703,6 +1736,63 @@ mod tests {
 
         assert!(matches!(result, Err(StoreError::InvalidImport(_))));
         assert!(store.list_repos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_duplicate_custody_role_emails_to_prevent_self_review() {
+        let mut request = import_request();
+        request.reviewer_email = request.preparer_email.clone();
+        let mut store = AppStore::empty();
+
+        let result = store.import_workspace(request, &preparer_actor());
+
+        assert!(
+            matches!(result, Err(StoreError::InvalidImport(message)) if message.contains("custody role emails"))
+        );
+        assert!(store.list_repos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_import_when_preparer_email_does_not_match_authenticated_actor() {
+        let mut request = import_request();
+        request.preparer_email = "someone-else@ahadvisory.test".to_string();
+        let mut store = AppStore::empty();
+
+        let result = store.import_workspace(request, &preparer_actor());
+
+        assert!(
+            matches!(result, Err(StoreError::InvalidImport(message)) if message.contains("preparer_email"))
+        );
+        assert!(store.list_repos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_reviewer_approval_when_actor_also_has_preparer_role() {
+        let mut store = AppStore::seeded();
+        let repo_id = *store.repos.keys().next().unwrap();
+        let review_pack_id = *store.review_packs.keys().next().unwrap();
+        if let Some(repo) = store.repos.get_mut(&repo_id) {
+            if let Some(reviewer) = repo
+                .collaborators
+                .iter_mut()
+                .find(|collaborator| collaborator.role == RepoRole::Reviewer)
+            {
+                reviewer.email = "aina@ahadvisory.test".to_string();
+            }
+        }
+
+        let result = store.approve_reviewer(
+            review_pack_id,
+            ApprovalRequest {
+                actor_name: Some("Aina Rahman".to_string()),
+                note: Some("Self-review attempt".to_string()),
+            },
+            &preparer_actor(),
+        );
+
+        assert!(
+            matches!(result, Err(StoreError::Forbidden(message)) if message.contains("independent reviewer"))
+        );
     }
 
     #[test]
