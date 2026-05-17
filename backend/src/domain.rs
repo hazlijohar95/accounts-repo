@@ -114,6 +114,24 @@ pub struct TrialBalanceLine {
     #[serde(with = "rust_decimal::serde::str")]
     pub amount: Decimal,
     pub source_label: String,
+    #[serde(default)]
+    pub source_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportSource {
+    pub id: Uuid,
+    pub legal_entity_id: Uuid,
+    pub period_branch_id: Uuid,
+    pub label: String,
+    pub file_name: Option<String>,
+    pub file_hash: String,
+    pub parser: String,
+    pub row_count: u32,
+    pub uploaded_by_user_id: String,
+    pub uploaded_by_name: String,
+    pub uploaded_by_email: String,
+    pub uploaded_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -327,7 +345,11 @@ pub struct ReviewPack {
 impl ReviewPack {
     pub fn approve_reviewer(
         &mut self,
+        actor_user_id: String,
         actor_name: String,
+        actor_email: String,
+        commit_id: Uuid,
+        snapshot_hash: String,
         note: Option<String>,
     ) -> Result<Approval, DomainError> {
         if self.status == ReviewStatus::Signed {
@@ -346,11 +368,18 @@ impl ReviewPack {
 
         let approval = Approval {
             id: Uuid::new_v4(),
+            review_pack_id: self.id,
+            commit_id,
             role: ApprovalRole::Reviewer,
+            actor_user_id,
             actor_name,
+            actor_email,
+            snapshot_hash,
+            approval_hash: String::new(),
             note,
             approved_at: Utc::now(),
         };
+        let approval = approval.with_hash();
         self.approvals.push(approval.clone());
         self.status = ReviewStatus::ReviewerApproved;
         Ok(approval)
@@ -358,7 +387,11 @@ impl ReviewPack {
 
     pub fn sign_client(
         &mut self,
+        actor_user_id: String,
         actor_name: String,
+        actor_email: String,
+        commit_id: Uuid,
+        snapshot_hash: String,
         note: Option<String>,
     ) -> Result<Approval, DomainError> {
         if self.status == ReviewStatus::Signed {
@@ -384,11 +417,18 @@ impl ReviewPack {
 
         let approval = Approval {
             id: Uuid::new_v4(),
+            review_pack_id: self.id,
+            commit_id,
             role: ApprovalRole::ClientDirector,
+            actor_user_id,
             actor_name,
+            actor_email,
+            snapshot_hash,
+            approval_hash: String::new(),
             note,
             approved_at: Utc::now(),
         };
+        let approval = approval.with_hash();
         self.approvals.push(approval.clone());
         self.status = ReviewStatus::Signed;
         Ok(approval)
@@ -412,10 +452,38 @@ pub enum ReviewStatus {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Approval {
     pub id: Uuid,
+    #[serde(default)]
+    pub review_pack_id: Uuid,
+    #[serde(default)]
+    pub commit_id: Uuid,
     pub role: ApprovalRole,
+    #[serde(default)]
+    pub actor_user_id: String,
     pub actor_name: String,
+    #[serde(default)]
+    pub actor_email: String,
+    #[serde(default)]
+    pub snapshot_hash: String,
+    #[serde(default)]
+    pub approval_hash: String,
     pub note: Option<String>,
     pub approved_at: DateTime<Utc>,
+}
+
+impl Approval {
+    fn with_hash(mut self) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(self.review_pack_id.as_bytes());
+        hasher.update(self.commit_id.as_bytes());
+        hasher.update(format!("{:?}", self.role).as_bytes());
+        hasher.update(self.actor_user_id.as_bytes());
+        hasher.update(self.actor_email.as_bytes());
+        hasher.update(self.snapshot_hash.as_bytes());
+        hasher.update(self.note.as_deref().unwrap_or_default().as_bytes());
+        hasher.update(self.approved_at.to_rfc3339().as_bytes());
+        self.approval_hash = format!("{:x}", hasher.finalize());
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -754,7 +822,14 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        let result = review_pack.sign_client("Hazli".to_string(), None);
+        let result = review_pack.sign_client(
+            "seed-owner".to_string(),
+            "Hazli".to_string(),
+            "hazli@example.test".to_string(),
+            Uuid::new_v4(),
+            "snapshot".to_string(),
+            None,
+        );
 
         assert_eq!(result, Err(DomainError::ReviewerApprovalRequired));
     }
@@ -769,6 +844,7 @@ mod tests {
                 account_type: AccountType::Income,
                 amount: dec("-1000.00"),
                 source_label: "TB".to_string(),
+                source_id: None,
             },
             TrialBalanceLine {
                 account_code: "6100".to_string(),
@@ -776,6 +852,7 @@ mod tests {
                 account_type: AccountType::Expense,
                 amount: dec("100.00"),
                 source_label: "TB".to_string(),
+                source_id: None,
             },
             TrialBalanceLine {
                 account_code: "2100".to_string(),
@@ -783,6 +860,7 @@ mod tests {
                 account_type: AccountType::Liability,
                 amount: dec("-100.00"),
                 source_label: "TB".to_string(),
+                source_id: None,
             },
         ];
         let mappings = vec![

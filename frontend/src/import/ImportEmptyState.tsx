@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import type { ImportWorkspacePayload } from "../types";
-import { parseTrialBalanceCsv } from "./parseTrialBalanceCsv";
+import { hashTrialBalanceText, parseTrialBalanceCsv, parseTrialBalanceFile } from "./parseTrialBalanceCsv";
 
 export function ImportEmptyState({
   currentUser,
@@ -65,13 +65,18 @@ function ImportWorkspaceForm({
   const [periodEnd, setPeriodEnd] = useState("");
   const [sourceLabel, setSourceLabel] = useState("");
   const [csvText, setCsvText] = useState("");
+  const [sourceFileName, setSourceFileName] = useState<string | null>(null);
+  const [sourceFileHash, setSourceFileHash] = useState<string | null>(null);
+  const [sourceParser, setSourceParser] = useState<"csv" | "xlsx">("csv");
+  const [sourceRowCount, setSourceRowCount] = useState<number | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     try {
       const trialBalance = parseTrialBalanceCsv(csvText);
+      const fileHash = sourceFileHash ?? await hashTrialBalanceText(csvText);
       setParseError(null);
       onImport({
         entity_name: entityName,
@@ -91,6 +96,10 @@ function ImportWorkspaceForm({
         period_start: periodStart,
         period_end: periodEnd,
         source_label: sourceLabel,
+        source_file_name: sourceFileName,
+        source_file_hash: fileHash,
+        source_parser: sourceParser,
+        source_row_count: sourceRowCount ?? trialBalance.length,
         trial_balance: trialBalance,
       });
     } catch (caught) {
@@ -102,8 +111,26 @@ function ImportWorkspaceForm({
     const file = event.currentTarget.files?.[0];
     if (!file) return;
 
-    setSourceLabel((current) => current || file.name);
-    setCsvText(await file.text());
+    try {
+      const parsedFile = await parseTrialBalanceFile(file);
+      setSourceLabel((current) => current || parsedFile.fileName);
+      setCsvText(parsedFile.csvText);
+      setSourceFileName(parsedFile.fileName);
+      setSourceFileHash(parsedFile.fileHash);
+      setSourceParser(parsedFile.parser);
+      setSourceRowCount(parsedFile.rowCount);
+      setParseError(null);
+    } catch (caught) {
+      setParseError(caught instanceof Error ? caught.message : "Could not parse selected file");
+    }
+  }
+
+  function handleCsvTextChange(value: string) {
+    setCsvText(value);
+    setSourceFileName(null);
+    setSourceFileHash(null);
+    setSourceParser("csv");
+    setSourceRowCount(null);
   }
 
   return (
@@ -189,13 +216,19 @@ function ImportWorkspaceForm({
       </label>
 
       <label>
-        CSV file
-        <input accept=".csv,text/csv" type="file" onChange={(event) => void handleFileSelect(event)} />
+        Source file
+        <input accept=".csv,text/csv,.xlsx,.xlsm,.xls" type="file" onChange={(event) => void handleFileSelect(event)} />
       </label>
+
+      {sourceFileHash ? (
+        <p className="source-evidence">
+          Parsed {sourceRowCount ?? 0} rows from {sourceFileName} with {sourceParser.toUpperCase()} parser. Source hash {sourceFileHash.slice(0, 16)}...
+        </p>
+      ) : null}
 
       <label>
         CSV contents
-        <textarea required rows={10} value={csvText} onChange={(event) => setCsvText(event.target.value)} />
+        <textarea required rows={10} value={csvText} onChange={(event) => handleCsvTextChange(event.target.value)} />
       </label>
 
       {parseError ? <p className="error-copy" role="alert">{parseError}</p> : null}

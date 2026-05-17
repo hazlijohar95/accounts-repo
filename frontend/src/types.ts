@@ -45,6 +45,22 @@ export interface TrialBalanceLine {
   account_type: "asset" | "liability" | "equity" | "income" | "expense";
   amount: string;
   source_label: string;
+  source_id: string | null;
+}
+
+export interface ImportSource {
+  id: string;
+  legal_entity_id: string;
+  period_branch_id: string;
+  label: string;
+  file_name: string | null;
+  file_hash: string;
+  parser: string;
+  row_count: number;
+  uploaded_by_user_id: string;
+  uploaded_by_name: string;
+  uploaded_by_email: string;
+  uploaded_at: string;
 }
 
 export interface Mapping {
@@ -131,8 +147,14 @@ export interface FsImpactDiff {
 
 export interface Approval {
   id: string;
+  review_pack_id: string;
+  commit_id: string;
   role: "reviewer" | "client_director";
+  actor_user_id: string;
   actor_name: string;
+  actor_email: string;
+  snapshot_hash: string;
+  approval_hash: string;
   note: string | null;
   approved_at: string;
 }
@@ -182,6 +204,8 @@ export interface SignedPackExportActor {
 }
 
 export interface SignedPackExport {
+  id: string;
+  payload_hash: string;
   exported_at: string;
   exported_by: SignedPackExportActor;
   repo: LegalEntityRepo;
@@ -195,6 +219,7 @@ export interface RepoWorkspace {
   repo: LegalEntityRepo;
   branch: PeriodBranch;
   commits: Commit[];
+  import_sources: ImportSource[];
   review_pack: ReviewPack;
   fs_impact_diff: FsImpactDiff;
   audit_events: AuditEvent[];
@@ -239,6 +264,10 @@ export interface ImportWorkspacePayload {
   period_start: string;
   period_end: string;
   source_label: string;
+  source_file_name?: string | null;
+  source_file_hash?: string | null;
+  source_parser?: string | null;
+  source_row_count?: number | null;
   trial_balance: ImportTrialBalanceLine[];
 }
 

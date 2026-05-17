@@ -77,6 +77,10 @@ fn import_request() -> WorkspaceImportRequest {
         period_start: chrono::NaiveDate::from_ymd_opt(2025, 7, 1).unwrap(),
         period_end: chrono::NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
         source_label: "Real TB export 2026-06-30".to_string(),
+        source_file_name: Some("real-tb.csv".to_string()),
+        source_file_hash: Some("test-source-hash".to_string()),
+        source_parser: Some("csv".to_string()),
+        source_row_count: Some(2),
         trial_balance: vec![
             WorkspaceImportTrialBalanceLine {
                 account_code: "1000".to_string(),
@@ -138,6 +142,9 @@ async fn stores_signed_review_pack_in_normalized_tables_to_prevent_schema_contra
     let (mut connection, schema) = create_schema(&database_url).await?;
 
     sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
+        .execute(&mut connection)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0002_evidence_foundation.sql"))
         .execute(&mut connection)
         .await?;
 
@@ -271,15 +278,18 @@ async fn stores_signed_review_pack_in_normalized_tables_to_prevent_schema_contra
     .await?;
     sqlx::query(
         r#"
-        INSERT INTO approvals (id, review_pack_id, role, actor_user_id, actor_name, actor_email, note)
-        VALUES ($1::uuid, $2::uuid, 'reviewer', $3, $4, $5, $6)
+        INSERT INTO approvals (id, review_pack_id, commit_id, role, actor_user_id, actor_name, actor_email, snapshot_hash, approval_hash, note)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, 'reviewer', $4, $5, $6, $7, $8, $9)
         "#,
     )
     .bind(approval_id.to_string())
     .bind(review_pack_id.to_string())
+    .bind(commit_id.to_string())
     .bind("seed-reviewer")
     .bind("Amjad Salleh")
     .bind("amjad@ahadvisory.test")
+    .bind("a".repeat(64))
+    .bind("d".repeat(64))
     .bind("Reviewed")
     .execute(&mut connection)
     .await?;
@@ -315,8 +325,8 @@ async fn stores_signed_review_pack_in_normalized_tables_to_prevent_schema_contra
     .await?;
     sqlx::query(
         r#"
-        INSERT INTO signed_pack_exports (id, review_pack_id, commit_id, payload_json, payload_hash, exported_by)
-        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb, $5, $6)
+        INSERT INTO signed_pack_exports (id, review_pack_id, commit_id, payload_json, payload_hash, exported_by, exported_by_user_id, exported_by_email)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb, $5, $6, $7, $8)
         "#,
     )
     .bind(export_id.to_string())
@@ -325,6 +335,8 @@ async fn stores_signed_review_pack_in_normalized_tables_to_prevent_schema_contra
     .bind(json!({"review_pack_id": review_pack_id.to_string(), "commit_id": commit_id.to_string()}))
     .bind("c".repeat(64))
     .bind("Amjad Salleh")
+    .bind("seed-reviewer")
+    .bind("amjad@ahadvisory.test")
     .execute(&mut connection)
     .await?;
 
@@ -343,11 +355,25 @@ async fn stores_signed_review_pack_in_normalized_tables_to_prevent_schema_contra
     .await?;
     assert_eq!(signed_pack_count, 1);
 
+    let rewrite_commit = sqlx::query(
+        r#"UPDATE commits SET message = 'Rewritten history' WHERE id = $1::uuid"#,
+    )
+    .bind(commit_id.to_string())
+    .execute(&mut connection)
+    .await;
+    assert!(rewrite_commit.is_err());
+
     let duplicate_role = sqlx::query(
-        r#"INSERT INTO approvals (id, review_pack_id, role, actor_name) VALUES ($1::uuid, $2::uuid, 'reviewer', 'Duplicate Reviewer')"#,
+        r#"
+        INSERT INTO approvals (id, review_pack_id, commit_id, role, actor_user_id, actor_name, actor_email, snapshot_hash, approval_hash)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, 'reviewer', 'seed-reviewer', 'Duplicate Reviewer', 'amjad@ahadvisory.test', $4, $5)
+        "#,
     )
     .bind(Uuid::new_v4().to_string())
     .bind(review_pack_id.to_string())
+    .bind(commit_id.to_string())
+    .bind("a".repeat(64))
+    .bind("e".repeat(64))
     .execute(&mut connection)
     .await;
     assert!(duplicate_role.is_err());
@@ -390,6 +416,8 @@ async fn persists_imported_workspace_across_fresh_state_load_to_prevent_restart_
         "Persistence Components Sdn Bhd"
     );
     assert_eq!(reloaded_workspace.commits.len(), 2);
+    assert_eq!(reloaded_workspace.import_sources.len(), 1);
+    assert_eq!(reloaded_workspace.import_sources[0].file_hash, "test-source-hash");
     assert_eq!(
         reloaded_workspace.review_pack.id,
         imported_workspace.review_pack.id
@@ -436,6 +464,28 @@ async fn mirrors_commits_and_audit_events_into_normalized_tables_when_schema_exi
             .bind(imported_workspace.repo.id.to_string())
             .fetch_one(&mut connection)
             .await?;
+    let import_source_count: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM import_sources WHERE period_branch_id = $1::uuid"#,
+    )
+    .bind(imported_workspace.branch.id.to_string())
+    .fetch_one(&mut connection)
+    .await?;
+    let account_count: i64 =
+        sqlx::query_scalar(r#"SELECT count(*) FROM accounts WHERE legal_entity_id = $1::uuid"#)
+            .bind(imported_workspace.repo.id.to_string())
+            .fetch_one(&mut connection)
+            .await?;
+    let tb_line_count: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM trial_balance_lines WHERE period_branch_id = $1::uuid"#,
+    )
+    .bind(imported_workspace.branch.id.to_string())
+    .fetch_one(&mut connection)
+    .await?;
+    let mapping_count: i64 =
+        sqlx::query_scalar(r#"SELECT count(*) FROM mappings WHERE legal_entity_id = $1::uuid"#)
+            .bind(imported_workspace.repo.id.to_string())
+            .fetch_one(&mut connection)
+            .await?;
     let head_commit_id: Option<String> = sqlx::query_scalar(
         r#"SELECT head_commit_id::text FROM period_branches WHERE id = $1::uuid"#,
     )
@@ -445,6 +495,10 @@ async fn mirrors_commits_and_audit_events_into_normalized_tables_when_schema_exi
 
     assert_eq!(commit_count, imported_workspace.commits.len() as i64);
     assert_eq!(audit_count, imported_workspace.audit_events.len() as i64);
+    assert_eq!(import_source_count, 1);
+    assert_eq!(account_count, 2);
+    assert_eq!(tb_line_count, 2);
+    assert_eq!(mapping_count, 2);
     assert_eq!(
         head_commit_id,
         Some(imported_workspace.branch.head_commit_id.to_string())

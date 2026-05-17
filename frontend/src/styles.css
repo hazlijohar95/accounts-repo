@@ -584,6 +584,15 @@ code,
   line-height: 1.5;
 }
 
+.source-evidence {
+  padding: var(--space-sm);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -645,6 +654,26 @@ textarea:focus-visible {
   background: var(--surface-muted);
 }
 
+.fs-trace {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.fs-trace summary {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.source-hash {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+}
+
 .diff-chip strong,
 .fs-card p {
   font-family: var(--mono);
@@ -662,6 +691,10 @@ textarea:focus-visible {
 
 .table-wrap--compact {
   max-height: 620px;
+}
+
+.table-wrap--trace table {
+  min-width: 760px;
 }
 
 table {
@@ -738,6 +771,11 @@ tr:last-child td {
 .query-composer {
   display: grid;
   gap: var(--space-xs);
+}
+
+.approval-form {
+  display: grid;
+  gap: var(--space-sm);
 }
 
 .query-composer__row {

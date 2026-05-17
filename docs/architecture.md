@@ -21,11 +21,11 @@ This keeps the session adapter in `auth-service/` and the authorization decision
 
 ### Persistence
 
-`backend/src/persistence.rs` currently persists the serialized `AppStore` in `app_state_snapshots`. This is intentional for the early product slice because the domain workflow is still changing quickly.
+`backend/src/persistence.rs` now loads from the normalized Postgres tables when they contain data and keeps `app_state_snapshots` as a compatibility/cache layer. Runtime writes mirror repo, branch, commit, import source, mapping, adjustment, approval, audit, and signed export evidence into normalized tables.
 
 `backend/migrations/0001_initial.sql` also defines the normalized target schema for legal entities, period branches, accounts, commits, review packs, approvals, queries, audit events, and signed exports. Integration tests guard that schema so future persistence work has a stable contract.
 
-Do not assume every normalized table is populated by runtime code yet. The migration is the target shape; `app_state_snapshots` is the current runtime adapter.
+Append-only evidence tables (`commits`, `approvals`, `audit_events`, and `signed_pack_exports`) have database triggers that reject updates and deletes. Corrections, re-approvals, and exports are represented as new rows/events rather than rewrites.
 
 ### Frontend API Access
 
@@ -44,6 +44,6 @@ Every change should preserve these properties:
 
 ## Scaling Direction
 
-The next persistence deepening step is to move runtime writes from the snapshot adapter into the normalized tables while keeping the public API and domain workflow stable. That should be done as a narrow migration path, not as a broad rewrite.
+The next persistence deepening step is to make command handlers operate directly in database transactions instead of mutating the in-memory `AppStore` and then mirroring it. Keep the public API and domain workflow stable while moving one command at a time.
 
 When adding integrations, prefer a small interface at the seam and one concrete adapter only when it has immediate leverage. Avoid pass-through modules that only rename another module without concentrating behavior.

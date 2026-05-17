@@ -1,10 +1,10 @@
-CREATE TABLE organizations (
+CREATE TABLE IF NOT EXISTS organizations (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY,
   auth_user_id TEXT UNIQUE,
   display_name TEXT NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE legal_entities (
+CREATE TABLE IF NOT EXISTS legal_entities (
   id UUID PRIMARY KEY,
   owner_organization_id UUID NOT NULL REFERENCES organizations(id),
   name TEXT NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE legal_entities (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE repo_collaborators (
+CREATE TABLE IF NOT EXISTS repo_collaborators (
   legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
   user_id UUID NOT NULL REFERENCES users(id),
   role TEXT NOT NULL CHECK (role IN ('owner', 'preparer', 'reviewer', 'client_signer', 'observer')),
@@ -30,7 +30,7 @@ CREATE TABLE repo_collaborators (
   PRIMARY KEY (legal_entity_id, user_id)
 );
 
-CREATE TABLE period_branches (
+CREATE TABLE IF NOT EXISTS period_branches (
   id UUID PRIMARY KEY,
   legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
   label TEXT NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE period_branches (
   UNIQUE (legal_entity_id, label)
 );
 
-CREATE TABLE accounts (
+CREATE TABLE IF NOT EXISTS accounts (
   id UUID PRIMARY KEY,
   legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
   code TEXT NOT NULL,
@@ -52,15 +52,33 @@ CREATE TABLE accounts (
   UNIQUE (legal_entity_id, code)
 );
 
-CREATE TABLE trial_balance_lines (
+CREATE TABLE IF NOT EXISTS import_sources (
+  id UUID PRIMARY KEY,
+  legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
+  period_branch_id UUID NOT NULL REFERENCES period_branches(id),
+  label TEXT NOT NULL,
+  file_name TEXT,
+  file_hash TEXT NOT NULL,
+  parser TEXT NOT NULL,
+  row_count INT NOT NULL CHECK (row_count >= 0),
+  uploaded_by_user_id TEXT NOT NULL,
+  uploaded_by_name TEXT NOT NULL,
+  uploaded_by_email TEXT NOT NULL,
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (period_branch_id, file_hash)
+);
+
+CREATE TABLE IF NOT EXISTS trial_balance_lines (
   id UUID PRIMARY KEY,
   period_branch_id UUID NOT NULL REFERENCES period_branches(id),
   account_id UUID NOT NULL REFERENCES accounts(id),
   amount NUMERIC(18, 2) NOT NULL,
-  source_label TEXT NOT NULL
+  source_label TEXT NOT NULL,
+  source_id UUID REFERENCES import_sources(id),
+  CONSTRAINT trial_balance_lines_period_account_unique UNIQUE (period_branch_id, account_id)
 );
 
-CREATE TABLE mappings (
+CREATE TABLE IF NOT EXISTS mappings (
   id UUID PRIMARY KEY,
   legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
   account_code TEXT NOT NULL,
@@ -69,24 +87,25 @@ CREATE TABLE mappings (
   UNIQUE (legal_entity_id, account_code)
 );
 
-CREATE TABLE adjustments (
+CREATE TABLE IF NOT EXISTS adjustments (
   id UUID PRIMARY KEY,
   period_branch_id UUID NOT NULL REFERENCES period_branches(id),
   reference TEXT NOT NULL,
   description TEXT NOT NULL,
   rationale TEXT NOT NULL,
   created_by TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT adjustments_period_reference_unique UNIQUE (period_branch_id, reference)
 );
 
-CREATE TABLE adjustment_lines (
+CREATE TABLE IF NOT EXISTS adjustment_lines (
   id UUID PRIMARY KEY,
   adjustment_id UUID NOT NULL REFERENCES adjustments(id),
   account_code TEXT NOT NULL,
   amount NUMERIC(18, 2) NOT NULL
 );
 
-CREATE TABLE commits (
+CREATE TABLE IF NOT EXISTS commits (
   id UUID PRIMARY KEY,
   period_branch_id UUID NOT NULL REFERENCES period_branches(id),
   sequence_number INT NOT NULL,
@@ -99,11 +118,18 @@ CREATE TABLE commits (
   UNIQUE (period_branch_id, sequence_number)
 );
 
-ALTER TABLE period_branches
-  ADD CONSTRAINT period_branches_head_commit_fk
-  FOREIGN KEY (head_commit_id) REFERENCES commits(id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'period_branches_head_commit_fk'
+  ) THEN
+    ALTER TABLE period_branches
+      ADD CONSTRAINT period_branches_head_commit_fk
+      FOREIGN KEY (head_commit_id) REFERENCES commits(id);
+  END IF;
+END $$;
 
-CREATE TABLE review_packs (
+CREATE TABLE IF NOT EXISTS review_packs (
   id UUID PRIMARY KEY,
   legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
   period_branch_id UUID NOT NULL REFERENCES period_branches(id),
@@ -114,19 +140,22 @@ CREATE TABLE review_packs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE approvals (
+CREATE TABLE IF NOT EXISTS approvals (
   id UUID PRIMARY KEY,
   review_pack_id UUID NOT NULL REFERENCES review_packs(id),
+  commit_id UUID NOT NULL REFERENCES commits(id),
   role TEXT NOT NULL CHECK (role IN ('reviewer', 'client_director')),
-  actor_user_id TEXT,
+  actor_user_id TEXT NOT NULL,
   actor_name TEXT NOT NULL,
-  actor_email TEXT,
+  actor_email TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  approval_hash TEXT NOT NULL,
   note TEXT,
   approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (review_pack_id, role)
+  CONSTRAINT approvals_pack_commit_role_unique UNIQUE (review_pack_id, commit_id, role)
 );
 
-CREATE TABLE review_queries (
+CREATE TABLE IF NOT EXISTS review_queries (
   id UUID PRIMARY KEY,
   review_pack_id UUID NOT NULL REFERENCES review_packs(id),
   title TEXT NOT NULL,
@@ -138,7 +167,7 @@ CREATE TABLE review_queries (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE audit_events (
+CREATE TABLE IF NOT EXISTS audit_events (
   id UUID PRIMARY KEY,
   legal_entity_id UUID NOT NULL REFERENCES legal_entities(id),
   sequence_number BIGINT NOT NULL,
@@ -155,23 +184,27 @@ CREATE TABLE audit_events (
   UNIQUE (legal_entity_id, event_hash)
 );
 
-CREATE TABLE signed_pack_exports (
+CREATE TABLE IF NOT EXISTS signed_pack_exports (
   id UUID PRIMARY KEY,
   review_pack_id UUID NOT NULL REFERENCES review_packs(id),
   commit_id UUID NOT NULL REFERENCES commits(id),
   payload_json JSONB NOT NULL,
   payload_hash TEXT NOT NULL,
   exported_by TEXT NOT NULL,
-  exported_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  exported_by_user_id TEXT NOT NULL,
+  exported_by_email TEXT NOT NULL,
+  exported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (review_pack_id, payload_hash)
 );
 
-CREATE TABLE app_state_snapshots (
+CREATE TABLE IF NOT EXISTS app_state_snapshots (
   key TEXT PRIMARY KEY,
   payload JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_period_branches_entity ON period_branches(legal_entity_id);
-CREATE INDEX idx_commits_branch_sequence ON commits(period_branch_id, sequence_number DESC);
-CREATE INDEX idx_audit_events_entity_time ON audit_events(legal_entity_id, occurred_at DESC);
-CREATE INDEX idx_review_queries_pack_status ON review_queries(review_pack_id, status);
+CREATE INDEX IF NOT EXISTS idx_period_branches_entity ON period_branches(legal_entity_id);
+CREATE INDEX IF NOT EXISTS idx_import_sources_branch ON import_sources(period_branch_id, uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commits_branch_sequence ON commits(period_branch_id, sequence_number DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_entity_time ON audit_events(legal_entity_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_review_queries_pack_status ON review_queries(review_pack_id, status);

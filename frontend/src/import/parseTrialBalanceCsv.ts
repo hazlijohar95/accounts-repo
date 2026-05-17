@@ -1,5 +1,36 @@
 import type { ImportTrialBalanceLine } from "../types";
 
+export interface ParsedTrialBalanceFile {
+  csvText: string;
+  fileName: string;
+  fileHash: string;
+  parser: "csv" | "xlsx";
+  rowCount: number;
+  trialBalance: ImportTrialBalanceLine[];
+}
+
+export async function parseTrialBalanceFile(file: File): Promise<ParsedTrialBalanceFile> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const fileHash = await sha256Hex(bytes);
+  const fileName = file.name;
+  const parser = isSpreadsheet(file) ? "xlsx" : "csv";
+  const csvText = parser === "xlsx" ? await workbookToCsv(bytes) : new TextDecoder().decode(bytes);
+  const trialBalance = parseTrialBalanceCsv(csvText);
+
+  return {
+    csvText,
+    fileName,
+    fileHash,
+    parser,
+    rowCount: trialBalance.length,
+    trialBalance,
+  };
+}
+
+export async function hashTrialBalanceText(csvText: string): Promise<string> {
+  return sha256Hex(new TextEncoder().encode(csvText));
+}
+
 export function parseTrialBalanceCsv(csvText: string): ImportTrialBalanceLine[] {
   const rows = parseCsv(csvText).filter((row) => row.some((cell) => cell.trim() !== ""));
   if (rows.length < 2) {
@@ -83,4 +114,26 @@ function parseCsv(input: string): string[][] {
   rows.push(row);
 
   return rows;
+}
+
+function isSpreadsheet(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".xlsx") || name.endsWith(".xlsm") || name.endsWith(".xls");
+}
+
+async function workbookToCsv(bytes: Uint8Array): Promise<string> {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.read(bytes, { type: "array" });
+  const firstSheetName = workbook.SheetNames[0];
+  if (!firstSheetName) throw new Error("Workbook does not contain any sheets");
+
+  const sheet = workbook.Sheets[firstSheetName];
+  return XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }

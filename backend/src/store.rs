@@ -1,9 +1,10 @@
 use crate::audit::push_audit_event;
 use crate::domain::{
     AccountType, Adjustment, AdjustmentLine, Approval, AuditEvent, AuditEventType, BranchStatus,
-    Collaborator, Commit, DomainError, FinancialSnapshot, FsImpactDiff, LegalEntityRepo, Mapping,
-    Organization, PeriodBranch, RepoRole, ReviewPack, ReviewQuery, ReviewStatus, TrialBalanceLine,
-    User, compare_commits, create_commit, repo_summary, short_hash,
+    Collaborator, Commit, DomainError, FinancialSnapshot, FsImpactDiff, ImportSource,
+    LegalEntityRepo, Mapping, Organization, PeriodBranch, RepoRole, ReviewPack, ReviewQuery,
+    ReviewStatus, TrialBalanceLine, User, compare_commits, create_commit, repo_summary,
+    short_hash,
 };
 use crate::store_support::{
     actor_id_for_email, email_or_default, validate_adjustment_accounts, validate_import_request,
@@ -11,6 +12,7 @@ use crate::store_support::{
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, str::FromStr};
 use thiserror::Error;
 use uuid::Uuid;
@@ -36,6 +38,7 @@ pub struct RepoWorkspace {
     pub repo: LegalEntityRepo,
     pub branch: PeriodBranch,
     pub commits: Vec<Commit>,
+    pub import_sources: Vec<ImportSource>,
     pub review_pack: ReviewPack,
     pub fs_impact_diff: FsImpactDiff,
     pub audit_events: Vec<AuditEvent>,
@@ -43,6 +46,8 @@ pub struct RepoWorkspace {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignedPackExport {
+    pub id: Uuid,
+    pub payload_hash: String,
     pub exported_at: DateTime<Utc>,
     pub exported_by: SignedPackExportActor,
     pub repo: LegalEntityRepo,
@@ -50,6 +55,30 @@ pub struct SignedPackExport {
     pub review_pack: ReviewPack,
     pub commit: Commit,
     pub audit_events: Vec<AuditEvent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedPackExportRecord {
+    pub id: Uuid,
+    pub review_pack_id: Uuid,
+    pub commit_id: Uuid,
+    pub payload_json: serde_json::Value,
+    pub payload_hash: String,
+    pub exported_by: String,
+    pub exported_by_user_id: String,
+    pub exported_by_email: String,
+    pub exported_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct SignedPackExportHashInput<'a> {
+    exported_at: DateTime<Utc>,
+    exported_by: &'a SignedPackExportActor,
+    repo: &'a LegalEntityRepo,
+    branch: &'a PeriodBranch,
+    review_pack: &'a ReviewPack,
+    commit: &'a Commit,
+    audit_events: &'a [AuditEvent],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -111,6 +140,14 @@ pub struct WorkspaceImportRequest {
     pub period_start: NaiveDate,
     pub period_end: NaiveDate,
     pub source_label: String,
+    #[serde(default)]
+    pub source_file_name: Option<String>,
+    #[serde(default)]
+    pub source_file_hash: Option<String>,
+    #[serde(default)]
+    pub source_parser: Option<String>,
+    #[serde(default)]
+    pub source_row_count: Option<u32>,
     pub trial_balance: Vec<WorkspaceImportTrialBalanceLine>,
 }
 
@@ -133,9 +170,13 @@ pub struct AppStore {
     pub(crate) branches: BTreeMap<Uuid, PeriodBranch>,
     pub(crate) branch_by_repo: BTreeMap<Uuid, Uuid>,
     pub(crate) commits_by_branch: BTreeMap<Uuid, Vec<Commit>>,
+    #[serde(default)]
+    pub(crate) import_sources_by_branch: BTreeMap<Uuid, Vec<ImportSource>>,
     pub(crate) review_packs: BTreeMap<Uuid, ReviewPack>,
     pub(crate) review_pack_by_repo: BTreeMap<Uuid, Uuid>,
     pub(crate) audit_events_by_repo: BTreeMap<Uuid, Vec<AuditEvent>>,
+    #[serde(default)]
+    pub(crate) signed_exports_by_pack: BTreeMap<Uuid, Vec<SignedPackExportRecord>>,
 }
 
 impl AppStore {
@@ -147,9 +188,11 @@ impl AppStore {
             branches: BTreeMap::new(),
             branch_by_repo: BTreeMap::new(),
             commits_by_branch: BTreeMap::new(),
+            import_sources_by_branch: BTreeMap::new(),
             review_packs: BTreeMap::new(),
             review_pack_by_repo: BTreeMap::new(),
             audit_events_by_repo: BTreeMap::new(),
+            signed_exports_by_pack: BTreeMap::new(),
         }
     }
 
@@ -386,9 +429,11 @@ impl AppStore {
             branches: BTreeMap::from([(branch_id, branch)]),
             branch_by_repo: BTreeMap::from([(repo_id, branch_id)]),
             commits_by_branch: BTreeMap::from([(branch_id, vec![commit_one, commit_two])]),
+            import_sources_by_branch: BTreeMap::new(),
             review_packs: BTreeMap::from([(review_pack_id, review_pack)]),
             review_pack_by_repo: BTreeMap::from([(repo_id, review_pack_id)]),
             audit_events_by_repo: BTreeMap::from([(repo_id, audit_events)]),
+            signed_exports_by_pack: BTreeMap::new(),
         }
     }
 
@@ -515,6 +560,41 @@ impl AppStore {
             actor.display_name.clone(),
         );
 
+        let import_source_id = Uuid::new_v4();
+        let import_source = ImportSource {
+            id: import_source_id,
+            legal_entity_id: repo_id,
+            period_branch_id: branch_id,
+            label: request.source_label.trim().to_string(),
+            file_name: request
+                .source_file_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            file_hash: request
+                .source_file_hash
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| import_request_hash(&request)),
+            parser: request
+                .source_parser
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("csv")
+                .to_string(),
+            row_count: request
+                .source_row_count
+                .unwrap_or(request.trial_balance.len() as u32),
+            uploaded_by_user_id: actor.auth_user_id.clone(),
+            uploaded_by_name: actor.display_name.clone(),
+            uploaded_by_email: actor.email.clone(),
+            uploaded_at: Utc::now(),
+        };
+
         let trial_balance = request
             .trial_balance
             .iter()
@@ -524,6 +604,7 @@ impl AppStore {
                 account_type: line.account_type.clone(),
                 amount: line.amount,
                 source_label: request.source_label.trim().to_string(),
+                source_id: Some(import_source_id),
             })
             .collect::<Vec<_>>();
         let mappings = request
@@ -647,6 +728,8 @@ impl AppStore {
         self.branch_by_repo.insert(repo_id, branch_id);
         self.commits_by_branch
             .insert(branch_id, vec![baseline_commit, import_commit]);
+        self.import_sources_by_branch
+            .insert(branch_id, vec![import_source]);
         self.review_packs.insert(review_pack_id, review_pack);
         self.review_pack_by_repo.insert(repo_id, review_pack_id);
         self.audit_events_by_repo.insert(repo_id, audit_events);
@@ -707,11 +790,21 @@ impl AppStore {
             .get(&branch_id)
             .cloned()
             .ok_or(StoreError::NotFound)?;
-        let first_commit = commits.first().ok_or(StoreError::NotFound)?;
-        let head_commit = commits
+        let import_sources = self
+            .import_sources_by_branch
+            .get(&branch_id)
+            .cloned()
+            .unwrap_or_default();
+        let head_commit_index = commits
             .iter()
-            .find(|commit| commit.id == branch.head_commit_id)
+            .position(|commit| commit.id == branch.head_commit_id)
             .ok_or(StoreError::NotFound)?;
+        let head_commit = &commits[head_commit_index];
+        let base_commit = if head_commit_index > 0 {
+            &commits[head_commit_index - 1]
+        } else {
+            head_commit
+        };
         let review_pack_id = *self
             .review_pack_by_repo
             .get(&repo_id)
@@ -730,8 +823,9 @@ impl AppStore {
         Ok(RepoWorkspace {
             repo,
             branch,
-            fs_impact_diff: compare_commits(first_commit, head_commit),
+            fs_impact_diff: compare_commits(base_commit, head_commit),
             commits,
+            import_sources,
             review_pack,
             audit_events,
         })
@@ -777,13 +871,20 @@ impl AppStore {
             .ok_or(StoreError::NotFound)?;
         self.require_repo_role(legal_entity_id, actor, &[RepoRole::Reviewer])?;
 
+        let (commit_id, snapshot_hash) = self.review_pack_commit_identity(review_pack_id)?;
         let (approval, legal_entity_id) = {
             let review_pack = self
                 .review_packs
                 .get_mut(&review_pack_id)
                 .ok_or(StoreError::NotFound)?;
-            let approval =
-                review_pack.approve_reviewer(actor.display_name.clone(), request.note)?;
+            let approval = review_pack.approve_reviewer(
+                actor.auth_user_id.clone(),
+                actor.display_name.clone(),
+                actor.email.clone(),
+                commit_id,
+                snapshot_hash.clone(),
+                request.note,
+            )?;
             (approval, review_pack.legal_entity_id)
         };
 
@@ -792,7 +893,7 @@ impl AppStore {
             actor,
             AuditEventType::ReviewerApproved,
             "Reviewer approved the frozen review pack snapshot".to_string(),
-            None,
+            Some(commit_id),
         );
 
         Ok(approval)
@@ -815,12 +916,20 @@ impl AppStore {
             &[RepoRole::ClientSigner, RepoRole::Owner],
         )?;
 
+        let (commit_id, snapshot_hash) = self.review_pack_commit_identity(review_pack_id)?;
         let (approval, legal_entity_id, branch_id) = {
             let review_pack = self
                 .review_packs
                 .get_mut(&review_pack_id)
                 .ok_or(StoreError::NotFound)?;
-            let approval = review_pack.sign_client(actor.display_name.clone(), request.note)?;
+            let approval = review_pack.sign_client(
+                actor.auth_user_id.clone(),
+                actor.display_name.clone(),
+                actor.email.clone(),
+                commit_id,
+                snapshot_hash.clone(),
+                request.note,
+            )?;
             (
                 approval,
                 review_pack.legal_entity_id,
@@ -837,7 +946,7 @@ impl AppStore {
             actor,
             AuditEventType::ClientSigned,
             "Client director signed the review pack and froze the period branch".to_string(),
-            None,
+            Some(commit_id),
         );
 
         Ok(approval)
@@ -1109,19 +1218,47 @@ impl AppStore {
             .cloned()
             .unwrap_or_default();
 
+        let exported_at = Utc::now();
+        let exported_by = SignedPackExportActor {
+            name: actor.display_name.clone(),
+            email: actor.email.clone(),
+            auth_user_id: actor.auth_user_id.clone(),
+        };
+        let payload_hash = signed_export_payload_hash(
+            exported_at,
+            &exported_by,
+            &repo,
+            &branch,
+            &review_pack,
+            &commit,
+            &audit_events,
+        );
         let payload = SignedPackExport {
-            exported_at: Utc::now(),
-            exported_by: SignedPackExportActor {
-                name: actor.display_name.clone(),
-                email: actor.email.clone(),
-                auth_user_id: actor.auth_user_id.clone(),
-            },
+            id: Uuid::new_v4(),
+            payload_hash: payload_hash.clone(),
+            exported_at,
+            exported_by,
             repo,
             branch,
             review_pack,
             commit,
             audit_events,
         };
+        let record = SignedPackExportRecord {
+            id: payload.id,
+            review_pack_id,
+            commit_id: signed_commit_id,
+            payload_json: serde_json::to_value(&payload).expect("signed export payload must serialize"),
+            payload_hash,
+            exported_by: payload.exported_by.name.clone(),
+            exported_by_user_id: payload.exported_by.auth_user_id.clone(),
+            exported_by_email: payload.exported_by.email.clone(),
+            exported_at: payload.exported_at,
+        };
+        self.signed_exports_by_pack
+            .entry(review_pack_id)
+            .or_default()
+            .push(record);
 
         Ok(payload)
     }
@@ -1198,6 +1335,27 @@ impl AppStore {
         Ok(repo)
     }
 
+    fn review_pack_commit_identity(
+        &self,
+        review_pack_id: Uuid,
+    ) -> Result<(Uuid, String), StoreError> {
+        let review_pack = self
+            .review_packs
+            .get(&review_pack_id)
+            .ok_or(StoreError::NotFound)?;
+        let commit = self
+            .commits_by_branch
+            .get(&review_pack.period_branch_id)
+            .and_then(|commits| {
+                commits
+                    .iter()
+                    .find(|commit| commit.id == review_pack.commit_id)
+            })
+            .ok_or(StoreError::NotFound)?;
+
+        Ok((commit.id, commit.snapshot_hash.clone()))
+    }
+
     fn push_audit(
         &mut self,
         legal_entity_id: Uuid,
@@ -1268,6 +1426,43 @@ fn dec(value: &str) -> Decimal {
     Decimal::from_str(value).expect("seed decimal must be valid")
 }
 
+fn import_request_hash(request: &WorkspaceImportRequest) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(request.source_label.trim().as_bytes());
+    for line in &request.trial_balance {
+        hasher.update(line.account_code.trim().as_bytes());
+        hasher.update(line.account_name.trim().as_bytes());
+        hasher.update(format!("{:?}", line.account_type).as_bytes());
+        hasher.update(line.amount.to_string().as_bytes());
+        hasher.update(line.fs_line.trim().as_bytes());
+        hasher.update(line.assertion.trim().as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn signed_export_payload_hash(
+    exported_at: DateTime<Utc>,
+    exported_by: &SignedPackExportActor,
+    repo: &LegalEntityRepo,
+    branch: &PeriodBranch,
+    review_pack: &ReviewPack,
+    commit: &Commit,
+    audit_events: &[AuditEvent],
+) -> String {
+    let payload = SignedPackExportHashInput {
+        exported_at,
+        exported_by,
+        repo,
+        branch,
+        review_pack,
+        commit,
+        audit_events,
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&payload).expect("signed export hash payload must serialize"));
+    format!("{:x}", hasher.finalize())
+}
+
 fn seed_trial_balance() -> Vec<TrialBalanceLine> {
     vec![
         tb("1000", "Cash at Bank", AccountType::Asset, "245000.00"),
@@ -1328,6 +1523,7 @@ fn tb(code: &str, name: &str, account_type: AccountType, amount: &str) -> TrialB
         account_type,
         amount: dec(amount),
         source_label: "SQL Ledger TB export 2026-06-30".to_string(),
+        source_id: None,
     }
 }
 
@@ -1429,6 +1625,10 @@ mod tests {
             period_start: NaiveDate::from_ymd_opt(2025, 7, 1).unwrap(),
             period_end: NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
             source_label: "Real TB export 2026-06-30".to_string(),
+            source_file_name: Some("real-tb.csv".to_string()),
+            source_file_hash: Some("test-source-hash".to_string()),
+            source_parser: Some("csv".to_string()),
+            source_row_count: Some(2),
             trial_balance: vec![
                 WorkspaceImportTrialBalanceLine {
                     account_code: "1000".to_string(),
@@ -1486,6 +1686,8 @@ mod tests {
         assert_eq!(workspace.commits.len(), 2);
         assert_eq!(workspace.branch.head_commit_id, workspace.commits[1].id);
         assert_eq!(workspace.review_pack.commit_id, workspace.commits[1].id);
+        assert_eq!(workspace.import_sources.len(), 1);
+        assert_eq!(workspace.import_sources[0].file_hash, "test-source-hash");
         assert_eq!(workspace.commits[1].snapshot.trial_balance.len(), 2);
         assert_eq!(workspace.fs_impact_diff.changed_fs_lines.len(), 2);
         assert_eq!(store.list_repos().unwrap().len(), 1);
@@ -1682,5 +1884,42 @@ mod tests {
         ));
         assert_eq!(after.commits.len(), before.commits.len());
         assert_eq!(after.branch.status, BranchStatus::Frozen);
+    }
+
+    #[test]
+    fn records_signed_export_payload_hash_for_evidence_persistence() {
+        let mut store = AppStore::seeded();
+        let review_pack_id = *store.review_packs.keys().next().unwrap();
+
+        store
+            .approve_reviewer(
+                review_pack_id,
+                ApprovalRequest {
+                    actor_name: Some("Amjad Salleh".to_string()),
+                    note: Some("Reviewed".to_string()),
+                },
+                &reviewer_actor(),
+            )
+            .unwrap();
+        store
+            .sign_client(
+                review_pack_id,
+                ApprovalRequest {
+                    actor_name: Some("Hazli Johar".to_string()),
+                    note: Some("Signed".to_string()),
+                },
+                &owner_actor(),
+            )
+            .unwrap();
+
+        let export = store
+            .signed_pack_export(review_pack_id, &owner_actor())
+            .unwrap();
+
+        let records = store.signed_exports_by_pack.get(&review_pack_id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].payload_hash, export.payload_hash);
+        assert_eq!(records[0].payload_hash.len(), 64);
+        assert_eq!(records[0].commit_id, export.commit.id);
     }
 }

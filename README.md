@@ -122,7 +122,9 @@ pnpm --dir auth-service auth:migrate --yes
 
 ## Real Data Import
 
-Run the backend and frontend, then import a CSV with these columns:
+Run the backend and frontend, then import a CSV or XLSX workbook. XLSX imports read the first sheet. The source file hash, parser, row count, and uploader are preserved with the review pack evidence.
+
+The imported table must have these columns:
 
 ```csv
 account_code,account_name,account_type,amount,fs_line,assertion

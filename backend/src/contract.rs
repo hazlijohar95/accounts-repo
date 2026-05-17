@@ -121,6 +121,7 @@ pub fn api_contract() -> ApiContract {
             "Approval",
             "ReviewQuery",
             "AuditEvent",
+            "ImportSource",
             "SignedPackExport",
             "ImportWorkspacePayload",
             "CorrectionCommitPayload",

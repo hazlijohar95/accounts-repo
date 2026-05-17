@@ -28,6 +28,7 @@ import type {
   Commit,
   CorrectionCommitPayload,
   FinancialStatementLine,
+  ImportSource,
   ImportWorkspacePayload,
   LegalEntityRepo,
   RepoWorkspace,
@@ -171,7 +172,8 @@ function WorkspaceApp({
 
   const headCommit = workspace.commits.find((commit) => commit.id === workspace.branch.head_commit_id) ??
     workspace.commits[workspace.commits.length - 1];
-  const firstCommit = workspace.commits[0];
+  const firstCommit = workspace.commits.find((commit) => commit.id === workspace.fs_impact_diff.from_commit_id) ??
+    workspace.commits[0];
 
   if (!headCommit || !firstCommit) {
     return (
@@ -191,6 +193,12 @@ function WorkspaceApp({
         actionPending={actionPending}
         currentUser={currentUser}
         headCommit={headCommit}
+        onNewImport={() => {
+          setWorkspace(null);
+          setSelectedRepoId(null);
+          setActiveTab("review");
+          scrollToTop();
+        }}
         onRepoSelect={handleRepoSelect}
         onSignOut={() => void authClient.signOut().then(() => window.location.reload())}
         repos={repos}
@@ -218,10 +226,10 @@ function WorkspaceApp({
               branchFrozen={branchFrozen}
               firstCommit={firstCommit}
               headCommit={headCommit}
-              onApprove={() =>
+              onApprove={(note) =>
                 void runAction("approve", async () => {
                   await approveReviewer(workspace.review_pack.id, {
-                    note: "Reviewed TB mapping, adjustment rationale, and FS impact diff.",
+                    note,
                   });
                 })
               }
@@ -251,10 +259,10 @@ function WorkspaceApp({
                   downloadJson(`${workspace.repo.name}-${workspace.branch.label}-signed-pack.json`, payload);
                 })
               }
-              onSign={() =>
+              onSign={(note) =>
                 void runAction("sign", async () => {
                   await signClient(workspace.review_pack.id, {
-                    note: `Director sign-off for the ${workspace.branch.label} pack.`,
+                    note,
                   });
                 })
               }
@@ -264,8 +272,10 @@ function WorkspaceApp({
           ) : null}
 
           {activeTab === "commits" ? <CommitPanel commits={workspace.commits} /> : null}
-          {activeTab === "statements" ? <StatementsPanel lines={headCommit.snapshot.fs_lines} /> : null}
-          {activeTab === "trial-balance" ? <TrialBalancePanel commit={headCommit} /> : null}
+          {activeTab === "statements" ? (
+            <StatementsPanel commit={headCommit} importSources={workspace.import_sources} lines={headCommit.snapshot.fs_lines} />
+          ) : null}
+          {activeTab === "trial-balance" ? <TrialBalancePanel commit={headCommit} importSources={workspace.import_sources} /> : null}
           {activeTab === "audit" ? <AuditPanel workspace={workspace} /> : null}
         </section>
       </section>
@@ -278,6 +288,7 @@ function RepoSidebar({
   currentUser,
   headCommit,
   onRepoSelect,
+  onNewImport,
   onSignOut,
   repos,
   selectedRepoId,
@@ -286,6 +297,7 @@ function RepoSidebar({
   actionPending: string | null;
   currentUser: { name: string; email: string };
   headCommit: Commit;
+  onNewImport: () => void;
   onRepoSelect: (repoId: string) => Promise<void>;
   onSignOut: () => void;
   repos: LegalEntityRepo[];
@@ -325,6 +337,9 @@ function RepoSidebar({
             );
           })}
         </nav>
+        <button className="secondary-button" disabled={actionPending !== null} onClick={onNewImport} type="button">
+          Import another repo
+        </button>
       </section>
 
       <section className="source-card" aria-label="Source data notice">
@@ -525,12 +540,12 @@ function ReviewWorkspace({
   currentUser: { email: string };
   firstCommit: Commit;
   headCommit: Commit;
-  onApprove: () => void;
+  onApprove: (note: string) => void;
   onCommitCorrection: (payload: CorrectionCommitPayload) => void;
   onExportSignedPack: () => void;
   onOpenQuery: (title: string) => void;
   onResolveQuery: (query: ReviewQuery) => void;
-  onSign: () => void;
+  onSign: (note: string) => void;
   workspace: RepoWorkspace;
 }) {
   const [correctionOpen, setCorrectionOpen] = useState(false);
@@ -620,6 +635,7 @@ function ReviewWorkspace({
         onResolveQuery={onResolveQuery}
         onSign={onSign}
         pack={workspace.review_pack}
+        snapshotHash={headCommit.snapshot_hash}
       />
     </div>
   );
@@ -644,7 +660,7 @@ function CorrectionCommitForm({
   const [debitAmount, setDebitAmount] = useState("");
   const [creditCode, setCreditCode] = useState("");
   const [creditAmount, setCreditAmount] = useState("");
-  const runningBalance = decimal(debitAmount) + decimal(creditAmount);
+  const runningBalance = decimal(debitAmount) - decimal(creditAmount);
   const isBalanced = debitAmount.trim() !== "" && creditAmount.trim() !== "" && runningBalance === 0;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -655,8 +671,8 @@ function CorrectionCommitForm({
       description,
       rationale,
       lines: [
-        { account_code: debitCode, amount: debitAmount },
-        { account_code: creditCode, amount: creditAmount },
+        { account_code: debitCode, amount: decimal(debitAmount).toFixed(2) },
+        { account_code: creditCode, amount: (-decimal(creditAmount)).toFixed(2) },
       ],
     });
   }
@@ -700,19 +716,19 @@ function CorrectionCommitForm({
 
       <div className="form-grid">
         <label>
-          First account code
+          Debit account code
           <input list="trial-balance-accounts" required value={debitCode} onChange={(event) => setDebitCode(event.target.value)} />
         </label>
         <label>
-          First amount
+          Debit amount
           <input inputMode="decimal" required value={debitAmount} onChange={(event) => setDebitAmount(event.target.value)} />
         </label>
         <label>
-          Second account code
+          Credit account code
           <input list="trial-balance-accounts" required value={creditCode} onChange={(event) => setCreditCode(event.target.value)} />
         </label>
         <label>
-          Second amount
+          Credit amount
           <input inputMode="decimal" required value={creditAmount} onChange={(event) => setCreditAmount(event.target.value)} />
         </label>
       </div>
@@ -778,18 +794,22 @@ function ReviewPackPanel({
   onOpenQuery,
   onResolveQuery,
   onSign,
+  snapshotHash,
 }: {
   pack: RepoWorkspace["review_pack"];
   actionPending: string | null;
   branchFrozen: boolean;
   currentUserRoles: RepoRole[];
-  onApprove: () => void;
+  onApprove: (note: string) => void;
   onExportSignedPack: () => void;
   onOpenQuery: (title: string) => void;
   onResolveQuery: (query: ReviewQuery) => void;
-  onSign: () => void;
+  onSign: (note: string) => void;
+  snapshotHash: string;
 }) {
   const [queryTitle, setQueryTitle] = useState("");
+  const [approvalNote, setApprovalNote] = useState("Reviewed TB mapping, adjustment rationale, and FS impact diff.");
+  const [signNote, setSignNote] = useState("Director sign-off for the current review pack snapshot.");
   const hasReviewerApproval = pack.approvals.some((approval) => approval.role === "reviewer");
   const hasClientSignature = pack.approvals.some((approval) => approval.role === "client_director");
   const openQueries = pack.open_queries.filter((query) => query.status === "open");
@@ -806,12 +826,16 @@ function ReviewPackPanel({
   const nextAction = !branchFrozen && pack.status === "in_review" && canApprove
     ? {
         label: actionPending === "approve" ? "Approving..." : "Approve as reviewer",
-        onClick: onApprove,
+        note: approvalNote,
+        onChange: setApprovalNote,
+        onSubmit: onApprove,
       }
     : !branchFrozen && pack.status === "reviewer_approved" && canSign
       ? {
           label: actionPending === "sign" ? "Signing..." : "Sign as client",
-          onClick: onSign,
+          note: signNote,
+          onChange: setSignNote,
+          onSubmit: onSign,
         }
       : null;
 
@@ -885,19 +909,27 @@ function ReviewPackPanel({
       ) : null}
 
       {nextAction ? (
-        <button
-          className="primary-button"
-          disabled={actionPending !== null || hasOpenQueries}
-          onClick={() => {
-            const confirmed = window.confirm(
-              `${nextAction.label.replace("...", "")}\n\nThis records your authenticated identity and current financial snapshot in the audit trail.`,
-            );
-            if (confirmed) nextAction.onClick();
+        <form
+          className="approval-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            nextAction.onSubmit(nextAction.note.trim());
           }}
-          type="button"
         >
-          {nextAction.label}
-        </button>
+          <label>
+            Evidence note
+            <textarea
+              disabled={actionPending !== null || hasOpenQueries}
+              onChange={(event) => nextAction.onChange(event.target.value)}
+              rows={3}
+              value={nextAction.note}
+            />
+          </label>
+          <p className="action-note">Records your verified identity against commit {formatHash(snapshotHash)}.</p>
+          <button className="primary-button" disabled={actionPending !== null || hasOpenQueries || !nextAction.note.trim()} type="submit">
+            {nextAction.label}
+          </button>
+        </form>
       ) : (
         <p className="action-note">{reviewActionMessage({ branchFrozen, canApprove, canSign, status: pack.status })}</p>
       )}
@@ -922,18 +954,30 @@ function CommitPanel({ commits }: { commits: Commit[] }) {
   );
 }
 
-function StatementsPanel({ lines }: { lines: FinancialStatementLine[] }) {
+function StatementsPanel({
+  commit,
+  importSources,
+  lines,
+}: {
+  commit: Commit;
+  importSources: ImportSource[];
+  lines: FinancialStatementLine[];
+}) {
   return (
     <Panel meta={`${lines.length} mapped lines`} title="Mapped financial statements">
       <div className="fs-grid">
         {lines.length === 0 ? <p className="quiet-note">No mapped FS lines yet.</p> : null}
-        {lines.map((line) => <FsLineCard line={line} key={line.fs_line} />)}
+        {lines.map((line) => (
+          <FsLineCard commit={commit} importSources={importSources} line={line} key={line.fs_line} />
+        ))}
       </div>
     </Panel>
   );
 }
 
-function TrialBalancePanel({ commit }: { commit: Commit }) {
+function TrialBalancePanel({ commit, importSources }: { commit: Commit; importSources: ImportSource[] }) {
+  const sourceById = new Map(importSources.map((source) => [source.id, source]));
+
   return (
     <Panel meta={`${commit.snapshot.trial_balance.length} source accounts`} title="Trial balance">
       <div className="table-wrap table-wrap--compact">
@@ -943,18 +987,26 @@ function TrialBalancePanel({ commit }: { commit: Commit }) {
               <th scope="col">Code</th>
               <th scope="col">Account</th>
               <th scope="col">Type</th>
+              <th scope="col">Source</th>
               <th className="numeric" scope="col">TB amount</th>
             </tr>
           </thead>
           <tbody>
-            {commit.snapshot.trial_balance.map((line) => (
-              <tr key={line.account_code}>
-                <td className="mono">{line.account_code}</td>
-                <td>{line.account_name}</td>
-                <td>{roleLabel(line.account_type)}</td>
-                <td className="numeric">{formatCurrency(line.amount, true)}</td>
-              </tr>
-            ))}
+            {commit.snapshot.trial_balance.map((line) => {
+              const source = line.source_id ? sourceById.get(line.source_id) : null;
+              return (
+                <tr key={line.account_code}>
+                  <td className="mono">{line.account_code}</td>
+                  <td>{line.account_name}</td>
+                  <td>{roleLabel(line.account_type)}</td>
+                  <td>
+                    {source?.file_name ?? line.source_label}
+                    {source ? <small className="source-hash">{formatHash(source.file_hash)}</small> : null}
+                  </td>
+                  <td className="numeric">{formatCurrency(line.amount, true)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1055,17 +1107,86 @@ function CommitRow({ commit }: { commit: Commit }) {
   );
 }
 
-function FsLineCard({ line }: { line: FinancialStatementLine }) {
+function FsLineCard({
+  commit,
+  importSources,
+  line,
+}: {
+  commit: Commit;
+  importSources: ImportSource[];
+  line: FinancialStatementLine;
+}) {
   const amount = decimal(line.amount);
   const accountCount = line.account_codes.length;
+  const sourceById = new Map(importSources.map((source) => [source.id, source]));
+  const accountRows = line.account_codes
+    .map((accountCode) => {
+      const trialBalanceLine = commit.snapshot.trial_balance.find((candidate) => candidate.account_code === accountCode);
+      if (!trialBalanceLine) return null;
+      const mapping = commit.snapshot.mappings.find((candidate) => candidate.account_code === accountCode);
+      const adjustmentAmount = adjustmentTotalForAccount(commit, accountCode);
+      const adjustedAmount = decimal(trialBalanceLine.amount) + adjustmentAmount;
+      const source = trialBalanceLine.source_id ? sourceById.get(trialBalanceLine.source_id) : null;
+
+      return {
+        accountCode,
+        adjustedAmount,
+        adjustmentAmount,
+        assertion: mapping?.assertion ?? "Unmapped",
+        source,
+        trialBalanceLine,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null);
 
   return (
     <article className="fs-card">
       <span>{accountCount} accounts</span>
       <strong>{line.fs_line}</strong>
       <p className={amount < 0 ? "negative" : "positive"}>{formatSignedCurrency(line.amount)}</p>
+      <details className="fs-trace">
+        <summary>Trace source accounts</summary>
+        <div className="table-wrap table-wrap--trace">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Code</th>
+                <th scope="col">Account</th>
+                <th scope="col">Assertion</th>
+                <th scope="col">Source</th>
+                <th className="numeric" scope="col">TB</th>
+                <th className="numeric" scope="col">Adj</th>
+                <th className="numeric" scope="col">Adjusted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accountRows.map((row) => (
+                <tr key={row.accountCode}>
+                  <td className="mono">{row.accountCode}</td>
+                  <td>{row.trialBalanceLine.account_name}</td>
+                  <td>{row.assertion}</td>
+                  <td>
+                    {row.source?.file_name ?? row.trialBalanceLine.source_label}
+                    {row.source ? <small className="source-hash">{formatHash(row.source.file_hash)}</small> : null}
+                  </td>
+                  <td className="numeric">{formatCurrency(row.trialBalanceLine.amount, true)}</td>
+                  <td className="numeric">{formatSignedCurrency(row.adjustmentAmount.toFixed(2))}</td>
+                  <td className="numeric">{formatSignedCurrency(row.adjustedAmount.toFixed(2))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </article>
   );
+}
+
+function adjustmentTotalForAccount(commit: Commit, accountCode: string) {
+  return commit.snapshot.adjustments
+    .flatMap((adjustment) => adjustment.lines)
+    .filter((line) => line.account_code === accountCode)
+    .reduce((total, line) => total + decimal(line.amount), 0);
 }
 
 function collaboratorName(workspace: RepoWorkspace, role: "preparer" | "reviewer" | "client_signer") {
