@@ -116,6 +116,34 @@ pub struct TrialBalanceLine {
     pub source_label: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountCode(String);
+
+impl AccountCode {
+    pub fn parse(value: &str) -> Result<Self, AccountCodeError> {
+        let code = value.trim();
+        if code.is_empty() {
+            return Err(AccountCodeError::Empty);
+        }
+        if code.chars().any(char::is_whitespace) {
+            return Err(AccountCodeError::ContainsWhitespace);
+        }
+        Ok(Self(code.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum AccountCodeError {
+    #[error("account code is required")]
+    Empty,
+    #[error("account code must not contain whitespace")]
+    ContainsWhitespace,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {

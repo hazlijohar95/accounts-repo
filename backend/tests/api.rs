@@ -153,6 +153,77 @@ async fn imports_real_trial_balance_through_http_to_prevent_seed_dependency() {
 }
 
 #[tokio::test]
+async fn exposes_complete_contract_metadata_for_known_api_routes() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/meta/contract")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let contract: serde_json::Value = read_json(response).await;
+    let routes = contract["routes"].as_array().unwrap();
+    let route_pairs = routes
+        .iter()
+        .map(|route| {
+            (
+                route["method"].as_str().unwrap(),
+                route["path"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for expected in [
+        ("GET", "/api/meta/contract"),
+        ("GET", "/api/repos"),
+        ("POST", "/api/imports/year-end-review-pack"),
+        ("GET", "/api/repos/{repo_id}"),
+        ("GET", "/api/repos/{repo_id}/audit"),
+        (
+            "POST",
+            "/api/repos/{repo_id}/branches/{branch_id}/correction-commits",
+        ),
+        ("GET", "/api/review-packs/{review_pack_id}"),
+        (
+            "POST",
+            "/api/review-packs/{review_pack_id}/reviewer-approval",
+        ),
+        ("POST", "/api/review-packs/{review_pack_id}/client-signoff"),
+        ("POST", "/api/review-packs/{review_pack_id}/queries"),
+        (
+            "POST",
+            "/api/review-packs/{review_pack_id}/queries/{query_id}/resolve",
+        ),
+        ("POST", "/api/review-packs/{review_pack_id}/signed-export"),
+    ] {
+        assert!(
+            route_pairs.contains(&expected),
+            "missing route {expected:?}"
+        );
+    }
+
+    let dto_interfaces = contract["dto_interfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|interface| interface.as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    for expected in ["ReviewPack", "AuditEvent", "SignedPackExport"] {
+        assert!(
+            dto_interfaces.contains(&expected),
+            "missing DTO interface {expected}",
+        );
+    }
+}
+
+#[tokio::test]
 async fn rejects_client_signoff_without_reviewer_approval_through_http() {
     let app = test_app();
     let repos_response = app
@@ -730,6 +801,13 @@ async fn maintains_audit_hash_chain_when_signed_pack_is_exported_through_http() 
     assert_eq!(
         export_payload["commit"]["id"],
         workspace.review_pack.commit_id.to_string()
+    );
+    assert_eq!(
+        export_payload["audit_events"]
+            .as_array()
+            .and_then(|events| events.last())
+            .and_then(|event| event["event_type"].as_str()),
+        Some("signed_pack_exported")
     );
 
     let audit_response = app

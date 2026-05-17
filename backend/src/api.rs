@@ -1,5 +1,6 @@
 use crate::{
     auth::{AuthConfig, AuthError},
+    contract::api_contract,
     domain::DomainError,
     persistence::PersistentState,
     store::{
@@ -30,6 +31,7 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/api/meta/contract", get(contract))
         .route("/api/repos", get(list_repos))
         .route("/api/imports/year-end-review-pack", post(import_workspace))
         .route("/api/repos/{repo_id}", get(repo_workspace))
@@ -61,6 +63,10 @@ pub fn app(state: AppState) -> Router {
         )
         .layer(cors_layer())
         .with_state(state)
+}
+
+async fn contract() -> Json<crate::contract::ApiContract> {
+    Json(api_contract())
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

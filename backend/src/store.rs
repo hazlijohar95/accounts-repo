@@ -1,20 +1,21 @@
+use crate::audit::push_audit_event;
 use crate::domain::{
     AccountType, Adjustment, AdjustmentLine, Approval, AuditEvent, AuditEventType, BranchStatus,
     Collaborator, Commit, DomainError, FinancialSnapshot, FsImpactDiff, LegalEntityRepo, Mapping,
     Organization, PeriodBranch, RepoRole, ReviewPack, ReviewQuery, ReviewStatus, TrialBalanceLine,
     User, compare_commits, create_commit, repo_summary, short_hash,
 };
-use chrono::{NaiveDate, Utc};
+use crate::store_support::{
+    actor_id_for_email, email_or_default, validate_adjustment_accounts, validate_import_request,
+};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    str::FromStr,
-};
+use std::{collections::BTreeMap, str::FromStr};
 use thiserror::Error;
 use uuid::Uuid;
+
+pub use crate::actor::AuthenticatedActor;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -30,13 +31,6 @@ pub enum StoreError {
     Domain(#[from] DomainError),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AuthenticatedActor {
-    pub auth_user_id: String,
-    pub display_name: String,
-    pub email: String,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoWorkspace {
     pub repo: LegalEntityRepo,
@@ -45,6 +39,24 @@ pub struct RepoWorkspace {
     pub review_pack: ReviewPack,
     pub fs_impact_diff: FsImpactDiff,
     pub audit_events: Vec<AuditEvent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedPackExport {
+    pub exported_at: DateTime<Utc>,
+    pub exported_by: SignedPackExportActor,
+    pub repo: LegalEntityRepo,
+    pub branch: PeriodBranch,
+    pub review_pack: ReviewPack,
+    pub commit: Commit,
+    pub audit_events: Vec<AuditEvent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedPackExportActor {
+    pub name: String,
+    pub email: String,
+    pub auth_user_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -115,15 +127,15 @@ pub struct WorkspaceImportTrialBalanceLine {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppStore {
-    users: BTreeMap<Uuid, User>,
-    organizations: BTreeMap<Uuid, Organization>,
-    repos: BTreeMap<Uuid, LegalEntityRepo>,
-    branches: BTreeMap<Uuid, PeriodBranch>,
-    branch_by_repo: BTreeMap<Uuid, Uuid>,
-    commits_by_branch: BTreeMap<Uuid, Vec<Commit>>,
-    review_packs: BTreeMap<Uuid, ReviewPack>,
-    review_pack_by_repo: BTreeMap<Uuid, Uuid>,
-    audit_events_by_repo: BTreeMap<Uuid, Vec<AuditEvent>>,
+    pub(crate) users: BTreeMap<Uuid, User>,
+    pub(crate) organizations: BTreeMap<Uuid, Organization>,
+    pub(crate) repos: BTreeMap<Uuid, LegalEntityRepo>,
+    pub(crate) branches: BTreeMap<Uuid, PeriodBranch>,
+    pub(crate) branch_by_repo: BTreeMap<Uuid, Uuid>,
+    pub(crate) commits_by_branch: BTreeMap<Uuid, Vec<Commit>>,
+    pub(crate) review_packs: BTreeMap<Uuid, ReviewPack>,
+    pub(crate) review_pack_by_repo: BTreeMap<Uuid, Uuid>,
+    pub(crate) audit_events_by_repo: BTreeMap<Uuid, Vec<AuditEvent>>,
 }
 
 impl AppStore {
@@ -655,7 +667,7 @@ impl AppStore {
     ) -> Result<Vec<LegalEntityRepo>, StoreError> {
         self.repos
             .iter()
-            .filter(|(_, repo)| actor_collaborates(repo, actor))
+            .filter(|(_, repo)| self.actor_collaborates(repo, actor))
             .map(|(repo_id, _)| self.repo_view(*repo_id))
             .collect()
     }
@@ -1047,7 +1059,7 @@ impl AppStore {
         &mut self,
         review_pack_id: Uuid,
         actor: &AuthenticatedActor,
-    ) -> Result<Value, StoreError> {
+    ) -> Result<SignedPackExport, StoreError> {
         let review_pack = self
             .review_packs
             .get(&review_pack_id)
@@ -1080,27 +1092,8 @@ impl AppStore {
             })
             .cloned()
             .ok_or(StoreError::NotFound)?;
-        let audit_events = self
-            .audit_events_by_repo
-            .get(&review_pack.legal_entity_id)
-            .cloned()
-            .unwrap_or_default();
-
         let legal_entity_id = review_pack.legal_entity_id;
         let signed_commit_id = review_pack.commit_id;
-        let payload = json!({
-            "exported_at": Utc::now(),
-            "exported_by": {
-                "name": actor.display_name,
-                "email": actor.email,
-                "auth_user_id": actor.auth_user_id,
-            },
-            "repo": repo,
-            "branch": branch,
-            "review_pack": review_pack,
-            "commit": commit,
-            "audit_events": audit_events,
-        });
 
         self.push_audit(
             legal_entity_id,
@@ -1109,6 +1102,26 @@ impl AppStore {
             "Signed evidence pack exported".to_string(),
             Some(signed_commit_id),
         );
+
+        let audit_events = self
+            .audit_events_by_repo
+            .get(&review_pack.legal_entity_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let payload = SignedPackExport {
+            exported_at: Utc::now(),
+            exported_by: SignedPackExportActor {
+                name: actor.display_name.clone(),
+                email: actor.email.clone(),
+                auth_user_id: actor.auth_user_id.clone(),
+            },
+            repo,
+            branch,
+            review_pack,
+            commit,
+            audit_events,
+        };
 
         Ok(payload)
     }
@@ -1214,10 +1227,9 @@ impl AppStore {
         allowed_roles: &[RepoRole],
     ) -> Result<(), StoreError> {
         let repo = self.repos.get(&repo_id).ok_or(StoreError::NotFound)?;
-        let actor_email = actor.email.to_ascii_lowercase();
         let allowed = repo.collaborators.iter().any(|collaborator| {
-            collaborator.email.eq_ignore_ascii_case(&actor_email)
-                && allowed_roles.contains(&collaborator.role)
+            allowed_roles.contains(&collaborator.role)
+                && self.collaborator_matches_actor(collaborator.user_id, &collaborator.email, actor)
         });
 
         if allowed {
@@ -1228,213 +1240,29 @@ impl AppStore {
             ))
         }
     }
-}
 
-fn validate_import_request(request: &WorkspaceImportRequest) -> Result<(), StoreError> {
-    let required = [
-        ("entity_name", request.entity_name.as_str()),
-        ("registration_number", request.registration_number.as_str()),
-        ("jurisdiction", request.jurisdiction.as_str()),
-        ("entity_type", request.entity_type.as_str()),
-        ("owner_name", request.owner_name.as_str()),
-        ("firm_name", request.firm_name.as_str()),
-        ("preparer_name", request.preparer_name.as_str()),
-        ("reviewer_name", request.reviewer_name.as_str()),
-        ("client_signer_name", request.client_signer_name.as_str()),
-        ("branch_label", request.branch_label.as_str()),
-        ("source_label", request.source_label.as_str()),
-    ];
-
-    for (field, value) in required {
-        if value.trim().is_empty() {
-            return Err(StoreError::InvalidImport(format!("{field} is required")));
-        }
+    fn actor_collaborates(&self, repo: &LegalEntityRepo, actor: &AuthenticatedActor) -> bool {
+        repo.collaborators.iter().any(|collaborator| {
+            self.collaborator_matches_actor(collaborator.user_id, &collaborator.email, actor)
+        })
     }
 
-    if request.period_start > request.period_end {
-        return Err(StoreError::InvalidImport(
-            "period_start must be before period_end".to_string(),
-        ));
-    }
-
-    if request.trial_balance.is_empty() {
-        return Err(StoreError::InvalidImport(
-            "trial_balance must include at least one account".to_string(),
-        ));
-    }
-
-    let mut account_codes = BTreeSet::new();
-    for line in &request.trial_balance {
-        let required_line = [
-            ("account_code", line.account_code.as_str()),
-            ("account_name", line.account_name.as_str()),
-            ("fs_line", line.fs_line.as_str()),
-            ("assertion", line.assertion.as_str()),
-        ];
-        for (field, value) in required_line {
-            if value.trim().is_empty() {
-                return Err(StoreError::InvalidImport(format!(
-                    "{field} is required for every trial balance line"
-                )));
-            }
+    fn collaborator_matches_actor(
+        &self,
+        user_id: Uuid,
+        email: &str,
+        actor: &AuthenticatedActor,
+    ) -> bool {
+        if email.eq_ignore_ascii_case(&actor.email) {
+            return true;
         }
 
-        if !account_codes.insert(line.account_code.trim().to_string()) {
-            return Err(StoreError::InvalidImport(format!(
-                "duplicate account code {}",
-                line.account_code.trim()
-            )));
-        }
-    }
-
-    let total = request
-        .trial_balance
-        .iter()
-        .map(|line| line.amount)
-        .sum::<Decimal>();
-    if !total.is_zero() {
-        return Err(StoreError::InvalidImport(
-            "trial_balance must balance to zero".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-fn user_email(name: &str, domain: &str) -> String {
-    let local = name
-        .trim()
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(".");
-
-    format!("{}@{}", local, domain)
-}
-
-fn email_or_default(email: &str, name: &str, domain: &str) -> String {
-    if email.trim().is_empty() {
-        user_email(name, domain)
-    } else {
-        email.trim().to_ascii_lowercase()
+        self.users
+            .get(&user_id)
+            .and_then(|user| user.auth_user_id.as_deref())
+            .is_some_and(|auth_user_id| auth_user_id == actor.auth_user_id)
     }
 }
-
-fn actor_id_for_email(actor: &AuthenticatedActor, email: &str) -> Option<String> {
-    actor
-        .email
-        .eq_ignore_ascii_case(email)
-        .then(|| actor.auth_user_id.clone())
-}
-
-fn validate_adjustment_accounts(
-    snapshot: &FinancialSnapshot,
-    lines: &[AdjustmentLine],
-) -> Result<(), DomainError> {
-    let account_codes = snapshot
-        .trial_balance
-        .iter()
-        .map(|line| line.account_code.as_str())
-        .collect::<BTreeSet<_>>();
-    let mapped_codes = snapshot
-        .mappings
-        .iter()
-        .map(|mapping| mapping.account_code.as_str())
-        .collect::<BTreeSet<_>>();
-
-    for line in lines {
-        if !account_codes.contains(line.account_code.as_str()) {
-            return Err(DomainError::UnknownAdjustmentAccount(
-                line.account_code.clone(),
-            ));
-        }
-        if !mapped_codes.contains(line.account_code.as_str()) {
-            return Err(DomainError::UnmappedAdjustmentAccount(
-                line.account_code.clone(),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn actor_collaborates(repo: &LegalEntityRepo, actor: &AuthenticatedActor) -> bool {
-    repo.collaborators
-        .iter()
-        .any(|collaborator| collaborator.email.eq_ignore_ascii_case(&actor.email))
-}
-
-fn push_audit_event(
-    events: &mut Vec<AuditEvent>,
-    legal_entity_id: Uuid,
-    actor: &AuthenticatedActor,
-    event_type: AuditEventType,
-    message: String,
-    related_commit_id: Option<Uuid>,
-) {
-    let sequence_number = events.len() as u64 + 1;
-    let previous_hash = events.last().map(|event| event.event_hash.clone());
-    let occurred_at = Utc::now();
-    let event_hash = audit_hash(
-        legal_entity_id,
-        sequence_number,
-        previous_hash.as_deref(),
-        actor,
-        &event_type,
-        &message,
-        occurred_at.to_rfc3339().as_str(),
-        related_commit_id,
-    );
-
-    AuditEvent {
-        id: Uuid::new_v4(),
-        legal_entity_id,
-        sequence_number,
-        actor_user_id: Some(actor.auth_user_id.clone()),
-        actor_name: actor.display_name.clone(),
-        actor_email: actor.email.clone(),
-        event_type,
-        message,
-        occurred_at,
-        related_commit_id,
-        previous_hash,
-        event_hash,
-    }
-    .pipe(|event| events.push(event));
-}
-
-fn audit_hash(
-    legal_entity_id: Uuid,
-    sequence_number: u64,
-    previous_hash: Option<&str>,
-    actor: &AuthenticatedActor,
-    event_type: &AuditEventType,
-    message: &str,
-    occurred_at: &str,
-    related_commit_id: Option<Uuid>,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(legal_entity_id.as_bytes());
-    hasher.update(sequence_number.to_be_bytes());
-    hasher.update(previous_hash.unwrap_or_default().as_bytes());
-    hasher.update(actor.auth_user_id.as_bytes());
-    hasher.update(actor.email.as_bytes());
-    hasher.update(format!("{:?}", event_type).as_bytes());
-    hasher.update(message.as_bytes());
-    hasher.update(occurred_at.as_bytes());
-    if let Some(commit_id) = related_commit_id {
-        hasher.update(commit_id.as_bytes());
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-
-impl<T> Pipe for T {}
 
 fn dec(value: &str) -> Decimal {
     Decimal::from_str(value).expect("seed decimal must be valid")

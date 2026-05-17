@@ -175,6 +175,22 @@ export interface AuditEvent {
   event_hash: string;
 }
 
+export interface SignedPackExportActor {
+  name: string;
+  email: string;
+  auth_user_id: string;
+}
+
+export interface SignedPackExport {
+  exported_at: string;
+  exported_by: SignedPackExportActor;
+  repo: LegalEntityRepo;
+  branch: PeriodBranch;
+  review_pack: ReviewPack;
+  commit: Commit;
+  audit_events: AuditEvent[];
+}
+
 export interface RepoWorkspace {
   repo: LegalEntityRepo;
   branch: PeriodBranch;

@@ -10,6 +10,7 @@ import type {
   ReviewPack,
   ReviewQuery,
   ReviewQueryPayload,
+  SignedPackExport,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -90,8 +91,8 @@ export function resolveReviewQuery(
   });
 }
 
-export function exportSignedPack(reviewPackId: string): Promise<unknown> {
-  return requestJson<unknown>(`/api/review-packs/${reviewPackId}/signed-export`, {
+export function exportSignedPack(reviewPackId: string): Promise<SignedPackExport> {
+  return requestJson<SignedPackExport>(`/api/review-packs/${reviewPackId}/signed-export`, {
     method: "POST",
   });
 }

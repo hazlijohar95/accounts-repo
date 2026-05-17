@@ -1,4 +1,4 @@
-use crate::store::AuthenticatedActor;
+use crate::actor::AuthenticatedActor;
 use axum::http::{HeaderMap, header};
 use reqwest::StatusCode;
 use serde::Deserialize;

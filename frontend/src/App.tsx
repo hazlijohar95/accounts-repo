@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChangeEvent, FormEvent, ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 import {
   approveReviewer,
   commitCorrection,
@@ -12,6 +12,7 @@ import {
   signClient,
 } from "./api";
 import { authClient, useAuthSession } from "./auth-client";
+import { ImportEmptyState } from "./import/ImportEmptyState";
 import {
   branchStatusLabel,
   decimal,
@@ -22,11 +23,11 @@ import {
   reviewStatusLabel,
   roleLabel,
 } from "./format";
+import { currentUserRoles, hasAnyRole, reviewActionMessage, workspaceSourceLabel } from "./workspace/helpers";
 import type {
   Commit,
   CorrectionCommitPayload,
   FinancialStatementLine,
-  ImportTrialBalanceLine,
   ImportWorkspacePayload,
   LegalEntityRepo,
   RepoWorkspace,
@@ -502,210 +503,6 @@ function AuthScreen({ onAuthChanged }: { onAuthChanged: () => void }) {
         </button>
       </form>
     </main>
-  );
-}
-
-function ImportEmptyState({
-  currentUser,
-  error,
-  importing,
-  onImport,
-  onRetry,
-}: {
-  currentUser: { name: string; email: string };
-  error: string | null;
-  importing: boolean;
-  onImport: (payload: ImportWorkspacePayload) => void;
-  onRetry: () => void;
-}) {
-  return (
-    <main className="empty-state empty-state--import">
-      <section className="import-intro">
-        <p className="eyebrow">Accounts Repo</p>
-        <h1>Import a mapped trial balance to open a review repo.</h1>
-        <p className="empty-copy">
-          Start with source data you can trace. The import preview will become the first commit,
-          then reviewers can approve and clients can sign a locked evidence pack.
-        </p>
-        {error ? <p className="error-copy" role="alert">{error}</p> : null}
-        {error ? (
-          <button className="secondary-button" onClick={onRetry} type="button">
-            Retry API connection
-          </button>
-        ) : null}
-      </section>
-
-      <ImportWorkspaceForm currentUser={currentUser} importing={importing} onImport={onImport} />
-    </main>
-  );
-}
-
-function ImportWorkspaceForm({
-  currentUser,
-  importing,
-  onImport,
-}: {
-  currentUser: { name: string; email: string };
-  importing: boolean;
-  onImport: (payload: ImportWorkspacePayload) => void;
-}) {
-  const [entityName, setEntityName] = useState("");
-  const [registrationNumber, setRegistrationNumber] = useState("");
-  const [jurisdiction, setJurisdiction] = useState("Malaysia");
-  const [entityType, setEntityType] = useState("Sdn Bhd");
-  const [ownerName, setOwnerName] = useState("");
-  const [ownerEmail, setOwnerEmail] = useState("");
-  const [firmName, setFirmName] = useState("Amjad & Hazli Advisory");
-  const [preparerName, setPreparerName] = useState(currentUser.name);
-  const [preparerEmail, setPreparerEmail] = useState(currentUser.email);
-  const [reviewerName, setReviewerName] = useState("");
-  const [reviewerEmail, setReviewerEmail] = useState("");
-  const [clientSignerName, setClientSignerName] = useState("");
-  const [clientSignerEmail, setClientSignerEmail] = useState("");
-  const [branchLabel, setBranchLabel] = useState("");
-  const [periodStart, setPeriodStart] = useState("");
-  const [periodEnd, setPeriodEnd] = useState("");
-  const [sourceLabel, setSourceLabel] = useState("");
-  const [csvText, setCsvText] = useState("");
-  const [parseError, setParseError] = useState<string | null>(null);
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    try {
-      const trialBalance = parseTrialBalanceCsv(csvText);
-      setParseError(null);
-      onImport({
-        entity_name: entityName,
-        registration_number: registrationNumber,
-        jurisdiction,
-        entity_type: entityType,
-        owner_name: ownerName,
-        owner_email: ownerEmail,
-        firm_name: firmName,
-        preparer_name: preparerName,
-        preparer_email: preparerEmail,
-        reviewer_name: reviewerName,
-        reviewer_email: reviewerEmail,
-        client_signer_name: clientSignerName,
-        client_signer_email: clientSignerEmail,
-        branch_label: branchLabel,
-        period_start: periodStart,
-        period_end: periodEnd,
-        source_label: sourceLabel,
-        trial_balance: trialBalance,
-      });
-    } catch (caught) {
-      setParseError(caught instanceof Error ? caught.message : "Could not parse CSV");
-    }
-  }
-
-  async function handleFileSelect(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0];
-    if (!file) return;
-
-    setSourceLabel((current) => current || file.name);
-    setCsvText(await file.text());
-  }
-
-  return (
-    <form className="import-panel" onSubmit={handleSubmit}>
-      <div>
-        <p className="section-label">Source data import</p>
-        <h2>Mapped trial balance</h2>
-        <p>
-          Required CSV columns: <code>account_code</code>, <code>account_name</code>, <code>account_type</code>, <code>amount</code>, <code>fs_line</code>, <code>assertion</code>.
-        </p>
-      </div>
-
-      <div className="form-grid">
-        <label>
-          Entity name
-          <input required value={entityName} onChange={(event) => setEntityName(event.target.value)} />
-        </label>
-        <label>
-          Registration number
-          <input required value={registrationNumber} onChange={(event) => setRegistrationNumber(event.target.value)} />
-        </label>
-        <label>
-          Jurisdiction
-          <input required value={jurisdiction} onChange={(event) => setJurisdiction(event.target.value)} />
-        </label>
-        <label>
-          Entity type
-          <input required value={entityType} onChange={(event) => setEntityType(event.target.value)} />
-        </label>
-        <label>
-          Owner
-          <input required value={ownerName} onChange={(event) => setOwnerName(event.target.value)} />
-        </label>
-        <label>
-          Owner email
-          <input required type="email" value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} />
-        </label>
-        <label>
-          Firm
-          <input required value={firmName} onChange={(event) => setFirmName(event.target.value)} />
-        </label>
-        <label>
-          Preparer
-          <input required value={preparerName} onChange={(event) => setPreparerName(event.target.value)} />
-        </label>
-        <label>
-          Preparer email
-          <input required type="email" value={preparerEmail} onChange={(event) => setPreparerEmail(event.target.value)} />
-        </label>
-        <label>
-          Reviewer
-          <input required value={reviewerName} onChange={(event) => setReviewerName(event.target.value)} />
-        </label>
-        <label>
-          Reviewer email
-          <input required type="email" value={reviewerEmail} onChange={(event) => setReviewerEmail(event.target.value)} />
-        </label>
-        <label>
-          Client signer
-          <input required value={clientSignerName} onChange={(event) => setClientSignerName(event.target.value)} />
-        </label>
-        <label>
-          Client signer email
-          <input required type="email" value={clientSignerEmail} onChange={(event) => setClientSignerEmail(event.target.value)} />
-        </label>
-        <label>
-          Branch label
-          <input required value={branchLabel} onChange={(event) => setBranchLabel(event.target.value)} />
-        </label>
-        <label>
-          Period start
-          <input required type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} />
-        </label>
-        <label>
-          Period end
-          <input required type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} />
-        </label>
-      </div>
-
-      <label>
-        Source label
-        <input required value={sourceLabel} onChange={(event) => setSourceLabel(event.target.value)} />
-      </label>
-
-      <label>
-        CSV file
-        <input accept=".csv,text/csv" type="file" onChange={(event) => void handleFileSelect(event)} />
-      </label>
-
-      <label>
-        CSV contents
-        <textarea required rows={10} value={csvText} onChange={(event) => setCsvText(event.target.value)} />
-      </label>
-
-      {parseError ? <p className="error-copy" role="alert">{parseError}</p> : null}
-
-      <button className="primary-button" disabled={importing} type="submit">
-        {importing ? "Importing..." : "Import real TB"}
-      </button>
-    </form>
   );
 }
 
@@ -1275,41 +1072,6 @@ function collaboratorName(workspace: RepoWorkspace, role: "preparer" | "reviewer
   return workspace.repo.collaborators.find((collaborator) => collaborator.role === role)?.display_name ?? roleLabel(role);
 }
 
-function currentUserRoles(workspace: RepoWorkspace, email: string): RepoRole[] {
-  return workspace.repo.collaborators
-    .filter((collaborator) => collaborator.email.toLowerCase() === email.toLowerCase())
-    .map((collaborator) => collaborator.role);
-}
-
-function hasAnyRole(actual: RepoRole[], allowed: RepoRole[]) {
-  return actual.some((role) => allowed.includes(role));
-}
-
-function reviewActionMessage({
-  branchFrozen,
-  canApprove,
-  canSign,
-  status,
-}: {
-  branchFrozen: boolean;
-  canApprove: boolean;
-  canSign: boolean;
-  status: ReviewStatus;
-}) {
-  if (branchFrozen) return "Signed branches are immutable.";
-  if (status === "in_review" && !canApprove) return "Reviewer approval is waiting for an assigned reviewer.";
-  if (status === "reviewer_approved" && !canSign) return "Client sign-off is waiting for the owner or signer.";
-  return "Review steps are complete.";
-}
-
-function workspaceSourceLabel(trialBalance: TrialBalanceLine[]) {
-  const labels = Array.from(new Set(trialBalance.map((line) => line.source_label).filter(Boolean)));
-
-  if (labels.length === 0) return "No imported trial balance source is attached.";
-  if (labels.length === 1) return labels[0];
-  return `${labels.length} imported sources`;
-}
-
 function downloadJson(filename: string, payload: unknown) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1323,92 +1085,6 @@ function downloadJson(filename: string, payload: unknown) {
 function scrollToTop() {
   if (import.meta.env.MODE === "test") return;
   window.requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
-}
-
-function parseTrialBalanceCsv(csvText: string): ImportTrialBalanceLine[] {
-  const rows = parseCsv(csvText).filter((row) => row.some((cell) => cell.trim() !== ""));
-  if (rows.length < 2) {
-    throw new Error("CSV must include a header row and at least one trial balance line");
-  }
-
-  const headers = rows[0].map((header) => header.trim().toLowerCase());
-  const requiredHeaders = ["account_code", "account_name", "account_type", "amount", "fs_line", "assertion"];
-  for (const header of requiredHeaders) {
-    if (!headers.includes(header)) throw new Error(`CSV is missing required column: ${header}`);
-  }
-
-  return rows.slice(1).map((row, index) => {
-    const value = (header: string) => row[headers.indexOf(header)]?.trim() ?? "";
-    const accountType = parseAccountType(value("account_type"), index + 2);
-
-    return {
-      account_code: value("account_code"),
-      account_name: value("account_name"),
-      account_type: accountType,
-      amount: value("amount"),
-      fs_line: value("fs_line"),
-      assertion: value("assertion"),
-    };
-  });
-}
-
-function parseAccountType(value: string, rowNumber: number): ImportTrialBalanceLine["account_type"] {
-  const normalized = value.trim().toLowerCase().replaceAll(" ", "_");
-  if (
-    normalized === "asset" ||
-    normalized === "liability" ||
-    normalized === "equity" ||
-    normalized === "income" ||
-    normalized === "expense"
-  ) {
-    return normalized;
-  }
-
-  throw new Error(`Invalid account_type on row ${rowNumber}: ${value}`);
-}
-
-function parseCsv(input: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < input.length; index += 1) {
-    const char = input[index];
-    const nextChar = input[index + 1];
-
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        cell += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (char === "," && !inQuotes) {
-      row.push(cell);
-      cell = "";
-      continue;
-    }
-
-    if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && nextChar === "\n") index += 1;
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = "";
-      continue;
-    }
-
-    cell += char;
-  }
-
-  row.push(cell);
-  rows.push(row);
-
-  return rows;
 }
 
 function KeyValue({ label, mono, value }: { label: string; mono?: boolean; value: string }) {
