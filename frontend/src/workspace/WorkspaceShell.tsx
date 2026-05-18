@@ -493,6 +493,7 @@ export function SettingsDialog({
                 <div className="theme-grid">
                   {theme.themes.map((item) => (
                     <button
+                      aria-pressed={theme.themeId === item.id}
                       className={theme.themeId === item.id ? "theme-card theme-card--active" : "theme-card"}
                       key={item.id}
                       onClick={() => theme.setThemeId(item.id)}
